@@ -1,0 +1,207 @@
+name: wkdevops-rttd
+
+# The seven domain services always target an externally managed PostgreSQL 16
+# instance reachable by container name on the pre-existing "wkDEVOPS" bridge
+# network. Connection strings carry no in-repository default: an operator must
+# inject <DOMAIN>_DATABASE_URL explicitly (DSN carries no password; the
+# matching <DOMAIN> password reaches the container through libpq PGPASSWORD
+# from a 600-mode operator env-file). Combined with APP_ENV=container this
+# turns a missing or misspelled DSN into an immediate start-up failure instead
+# of a silent in-memory downgrade that would still report healthy.
+networks:
+  platform:
+    external: true
+    name: wkDEVOPS
+
+services:
+  iam-service:
+    build:
+      context: ..
+      dockerfile: iam-service/Dockerfile
+    container_name: wkDEVOPS-iam-service
+    user: "10001:10001"
+    environment:
+      APP_ENV: container
+      DATABASE_URL: ${IAM_DATABASE_URL}
+      # Password is injected out-of-band through libpq PGPASSWORD (600-mode
+      # env-file); the DSN above deliberately carries no secret.
+      PGPASSWORD: ${PGPASSWORD_IAM}
+      # No external identity provider exists yet, so the integration profile
+      # still authenticates through the local development provider. IAM only
+      # accepts that downgrade when it is stated here explicitly, exactly as
+      # tp-service must state ALLOW_EXPLICIT_MOCK_CAPABILITY for its mock AI.
+      ALLOW_EXPLICIT_DEV_AUTH: "true"
+    ports: ["127.0.0.1:${IAM_PORT:-18140}:18140"]
+    networks: [platform]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18140/ready', timeout=2)"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    read_only: true
+    tmpfs: [/tmp:size=64m]
+    security_opt: [no-new-privileges:true]
+  workflow-service:
+    build:
+      context: ..
+      dockerfile: workflow-service/Dockerfile
+    container_name: wkDEVOPS-workflow-service
+    user: "10001:10001"
+    environment:
+      APP_ENV: container
+      DATABASE_URL: ${WORKFLOW_DATABASE_URL}
+      PGPASSWORD: ${PGPASSWORD_WORKFLOW}
+    ports: ["127.0.0.1:${WORKFLOW_PORT:-18150}:18150"]
+    networks: [platform]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18150/ready', timeout=2)"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    read_only: true
+    tmpfs: [/tmp:size=64m]
+    security_opt: [no-new-privileges:true]
+  requirement-service:
+    build:
+      context: ..
+      dockerfile: requirement-service/Dockerfile
+    container_name: wkDEVOPS-requirement-service
+    user: "10001:10001"
+    environment:
+      APP_ENV: container
+      DATABASE_URL: ${REQUIREMENT_DATABASE_URL}
+      PGPASSWORD: ${PGPASSWORD_REQUIREMENT}
+    ports: ["127.0.0.1:${REQUIREMENT_PORT:-18110}:18110"]
+    networks: [platform]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18110/ready', timeout=2)"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    read_only: true
+    tmpfs: [/tmp:size=64m]
+    security_opt: [no-new-privileges:true]
+  tp-service:
+    build:
+      context: ..
+      dockerfile: tp-service/Dockerfile
+    container_name: wkDEVOPS-tp-service
+    user: "10001:10001"
+    environment:
+      APP_ENV: container
+      DATABASE_URL: ${TP_DATABASE_URL}
+      PGPASSWORD: ${PGPASSWORD_TP}
+      AI_ADAPTER: mock
+      ALLOW_EXPLICIT_MOCK_CAPABILITY: "true"
+    ports: ["127.0.0.1:${TP_PORT:-18120}:18120"]
+    networks: [platform]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18120/ready', timeout=2)"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    read_only: true
+    tmpfs: [/tmp:size=256m]
+    security_opt: [no-new-privileges:true]
+  td-service:
+    build:
+      context: ..
+      dockerfile: td-service/Dockerfile
+    container_name: wkDEVOPS-td-service
+    user: "10001:10001"
+    environment:
+      APP_ENV: container
+      DATABASE_URL: ${TD_DATABASE_URL}
+      PGPASSWORD: ${PGPASSWORD_TD}
+      FIX_EVIDENCE_ADAPTER: placeholder
+    ports: ["127.0.0.1:${TD_PORT:-18130}:18130"]
+    networks: [platform]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18130/ready', timeout=2)"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    read_only: true
+    tmpfs: [/tmp:size=64m]
+    security_opt: [no-new-privileges:true]
+  audit-service:
+    build:
+      context: ..
+      dockerfile: audit-service/Dockerfile
+    container_name: wkDEVOPS-audit-service
+    user: "10001:10001"
+    environment:
+      APP_ENV: container
+      DATABASE_URL: ${AUDIT_DATABASE_URL}
+      PGPASSWORD: ${PGPASSWORD_AUDIT}
+    ports: ["127.0.0.1:${AUDIT_PORT:-18160}:18160"]
+    networks: [platform]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18160/ready', timeout=2)"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    read_only: true
+    tmpfs: [/tmp:size=64m]
+    security_opt: [no-new-privileges:true]
+  notification-service:
+    build:
+      context: ..
+      dockerfile: notification-service/Dockerfile
+    container_name: wkDEVOPS-notification-service
+    user: "10001:10001"
+    environment:
+      APP_ENV: container
+      DATABASE_URL: ${NOTIFICATION_DATABASE_URL}
+      PGPASSWORD: ${PGPASSWORD_NOTIFICATION}
+    ports: ["127.0.0.1:${NOTIFICATION_PORT:-18170}:18170"]
+    networks: [platform]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18170/ready', timeout=2)"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    read_only: true
+    tmpfs: [/tmp:size=64m]
+    security_opt: [no-new-privileges:true]
+  # Throwaway scaffolding for isolated local experiments only. Profile-gated so
+  # that a plain `docker compose up` can neither bind a port owned by the
+  # platform instance nor start a database engine of a different major version.
+  postgres:
+    profiles: ["local-infra"]
+    image: postgres:16-alpine
+    container_name: wkDEVOPS-python-compat-postgres
+    environment:
+      POSTGRES_DB: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    ports:
+      - "127.0.0.1:${POSTGRES_PORT:-25532}:5432"
+    networks: [platform]
+    volumes:
+      - ./postgres/init-databases.sql:/docker-entrypoint-initdb.d/init-databases.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  rabbitmq:
+    profiles: ["local-infra"]
+    image: rabbitmq:4.1-management-alpine
+    container_name: wkDEVOPS-python-compat-rabbitmq
+    environment:
+      RABBITMQ_DEFAULT_USER: wkdevops
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}
+      RABBITMQ_SERVER_ADDITIONAL_ERL_ARGS: -rabbitmq_management load_definitions "/etc/rabbitmq/definitions.json"
+    ports:
+      - "127.0.0.1:${RABBITMQ_PORT:-25672}:5672"
+      - "127.0.0.1:${RABBITMQ_MANAGEMENT_PORT:-25673}:15672"
+    networks: [platform]
+    volumes:
+      - ./rabbitmq/definitions.json:/etc/rabbitmq/definitions.json:ro
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+volumes: {}

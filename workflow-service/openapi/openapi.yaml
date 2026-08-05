@@ -1,0 +1,85 @@
+openapi: 3.1.0
+info:
+  title: Workflow Service
+  version: 1.0.0
+paths:
+  /api/v1/workflow-templates:
+    post:
+      responses:
+        '201': {description: Draft created}
+        '403': {description: Permission denied}
+  /api/v1/workflow-templates/{key}/versions/{version}/publish:
+    parameters:
+      - {$ref: '#/components/parameters/TemplateKey'}
+      - {$ref: '#/components/parameters/TemplateVersion'}
+    post:
+      responses:
+        '200': {description: Published}
+        '409': {description: Invalid status}
+  /api/v1/workflow-templates/{key}/versions/{version}/deprecate:
+    parameters:
+      - {$ref: '#/components/parameters/TemplateKey'}
+      - {$ref: '#/components/parameters/TemplateVersion'}
+    post:
+      responses:
+        '200': {description: Deprecated}
+        '409': {description: Invalid status}
+  /api/v1/workflow-instances:
+    get:
+      responses:
+        '200': {description: Project-authorized instances}
+    post:
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      responses:
+        '201': {description: Started}
+        '403': {description: Denied}
+  /api/v1/workflow-instances/{instance_id}:
+    parameters:
+      - {$ref: '#/components/parameters/InstanceId'}
+    get:
+      responses:
+        '200': {description: Instance}
+        '404': {description: Hidden or missing}
+  /api/v1/workflow-instances/{instance_id}/available-transitions:
+    parameters:
+      - {$ref: '#/components/parameters/InstanceId'}
+    get:
+      responses:
+        '200': {description: Available transitions}
+  /api/v1/workflow-instances/{instance_id}/transitions:
+    parameters:
+      - {$ref: '#/components/parameters/InstanceId'}
+    post:
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - in: header
+          name: If-Match
+          required: true
+          schema: {type: string}
+      responses:
+        '200': {description: Transitioned}
+        '409': {description: Invalid transition}
+        '412': {description: Version conflict}
+components:
+  parameters:
+    TemplateKey:
+      in: path
+      name: key
+      required: true
+      schema: {type: string}
+    TemplateVersion:
+      in: path
+      name: version
+      required: true
+      schema: {type: integer, minimum: 1}
+    InstanceId:
+      in: path
+      name: instance_id
+      required: true
+      schema: {type: string}
+    IdempotencyKey:
+      in: header
+      name: Idempotency-Key
+      required: true
+      schema: {type: string}

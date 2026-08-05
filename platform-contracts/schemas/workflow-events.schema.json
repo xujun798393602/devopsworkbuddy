@@ -1,0 +1,5 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://devops.company.internal/schemas/workflow-events.schema.json","title":"Workflow event data","type":"object",
+  "required":["instance_id","template_key","template_version","business_object_type","business_object_id","current_state","recipient_ids"],
+  "properties":{"instance_id":{"type":"string"},"template_key":{"type":"string"},"template_version":{"type":"integer","minimum":1},"business_object_type":{"type":"string"},"business_object_id":{"type":"string"},"current_state":{"type":"string"},"recipient_ids":{"type":"array","items":{"type":"string"}},"from_state":{"type":"string"},"to_state":{"type":"string"},"action":{"type":"string"},"instance_version":{"type":"integer","minimum":1},"reason_present":{"type":"boolean"}},"additionalProperties":false
+}

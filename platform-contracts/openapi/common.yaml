@@ -1,0 +1,21 @@
+openapi: 3.1.0
+info: {title: Platform Common Components, version: 1.0.0}
+paths: {}
+components:
+  schemas:
+    Problem:
+      type: object
+      required: [type, title, status, detail, error_code, trace_id]
+      properties:
+        type: {type: string}
+        title: {type: string}
+        status: {type: integer}
+        detail: {type: string}
+        error_code: {type: string}
+        trace_id: {type: string}
+    Meta:
+      type: object
+      required: [trace_id]
+      properties:
+        trace_id: {type: string}
+        next_cursor: {type: [string, 'null']}

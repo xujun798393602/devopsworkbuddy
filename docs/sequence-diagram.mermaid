@@ -1,0 +1,67 @@
+sequenceDiagram
+actor Client
+participant API as Flask API
+participant Svc as TaskService
+participant UoW as UnitOfWork
+participant Auth as AuthorizationPolicy
+participant Idem as IdempotencyRepository
+participant Repo as TaskRepository
+participant Audit as AuditRepository
+participant Outbox as OutboxRepository
+participant DB as PostgreSQL
+
+Client->>API: POST /projects/{p}/tasks + Actor + Idempotency-Key
+API->>Svc: create_task(p, command, context, key)
+Svc->>UoW: __enter__()
+Svc->>Idem: lock(scope, key)
+Idem->>DB: pg_advisory_xact_lock
+Svc->>Idem: get(scope, key)
+alt completed replay
+  Idem-->>Svc: stored status/body
+  Svc-->>API: replay result
+else first execution
+  Svc->>Repo: get_active_membership(p, actor)
+  Repo->>DB: SELECT WHERE project_id=p
+  Svc->>Auth: authorize(role, CREATE_TASK)
+  Svc->>Repo: validate version/iteration/members in p
+  Svc->>Repo: add(task)
+  Svc->>Audit: append(Task.Created)
+  Svc->>Outbox: append(Task.Created.v1)
+  Svc->>Idem: complete(status=201, body)
+  Svc->>UoW: commit()
+  UoW->>DB: COMMIT
+  Svc-->>API: Task
+end
+API-->>Client: 201 data + trace_id
+
+Client->>API: PATCH/transition task + If-Match
+API->>Svc: update/transition(expected_version)
+Svc->>UoW: __enter__()
+Svc->>Idem: lock + replay check
+Svc->>Repo: get(p, task_id)
+Svc->>Auth: authorize(role, action, task context)
+Svc->>Repo: UPDATE WHERE project_id AND id AND version
+alt rowcount = 0
+  Svc-->>API: 412 VERSION_CONFLICT
+else updated
+  Svc->>Audit: append(before, after)
+  Svc->>Outbox: append(event)
+  Svc->>Idem: complete(200, body)
+  Svc->>UoW: commit()
+  API-->>Client: 200 + new ETag
+end
+
+Client->>API: POST worklog correction
+API->>Svc: correct_worklog(...)
+Svc->>UoW: __enter__()
+Svc->>Idem: lock + replay check
+Svc->>Repo: lock task and user/project/date advisory key
+Svc->>Repo: get original WHERE project_id/task_id
+Svc->>Auth: authorize self or Owner/Admin
+Svc->>Repo: sum task and user-day minutes
+Svc->>Repo: append immutable correction
+Svc->>Audit: append(Worklog.Corrected)
+Svc->>Outbox: append(Worklog.Corrected.v1)
+Svc->>Idem: complete(201, body)
+Svc->>UoW: commit()
+API-->>Client: 201 correction + actual_minutes

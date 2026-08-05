@@ -1,0 +1,14 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+[project]
+name = "requirement-service"
+version = "0.1.0"
+requires-python = ">=3.12,<3.14"
+dependencies = ["Flask>=3.1,<4", "SQLAlchemy>=2.0.41,<2.1", "psycopg[binary]>=3.2.9,<4", "alembic>=1.16.4,<2", "gunicorn>=23,<24"]
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+markers = ["integration: requires an external integration environment"]
+[tool.ruff]
+line-length = 120
+target-version = "py312"

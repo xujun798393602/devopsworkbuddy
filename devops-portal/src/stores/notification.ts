@@ -1,0 +1,2 @@
+import { defineStore } from 'pinia';import { api } from '../api/client';
+export const useNotificationStore=defineStore('notification',{state:()=>({unread:0,timer:undefined as number|undefined}),actions:{async refresh(){const r=await api<{data:{count:number}}>('/bff/api/v1/me/notifications/unread-count');this.unread=r.data.count},start(){this.stop();void this.refresh();this.timer=window.setInterval(()=>void this.refresh(),30000)},stop(){if(this.timer)clearInterval(this.timer);this.timer=undefined}}});

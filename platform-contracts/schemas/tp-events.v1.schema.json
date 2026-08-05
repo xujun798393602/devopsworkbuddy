@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://devops.company.internal/schemas/tp-events.v1.schema.json",
+  "title": "Test management domain event data v1",
+  "type": "object",
+  "required": ["event_type", "aggregate_id", "status", "version"],
+  "properties": {
+    "event_type": {"enum": ["TestDesign.SessionCreated", "TestDesign.StageCompleted", "TestDesign.GateDecided", "TestDesign.CasesImported", "TestCase.VersionActivated", "TestPlan.Ready", "TestPlan.Started", "TestPlan.Completed", "TestExecution.CaseRunCompleted", "TestReport.Published", "Automation.TaskCreated", "Automation.ResultIngested"]},
+    "aggregate_id": {"type": "string", "format": "uuid"}, "business_no": {"type": "string"},
+    "status": {"type": "string"}, "version": {"type": "integer", "minimum": 1},
+    "provider": {"enum": ["mock", "safe", "memory", "external"]}, "model": {"type": "string", "maxLength": 100},
+    "artifact_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"}, "payload_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+    "external_run_ref": {"type": "string", "maxLength": 500}, "counts": {"type": "object", "additionalProperties": {"type": "integer", "minimum": 0}},
+    "recipient_ids": {"type": "array", "maxItems": 200, "items": {"type": "string"}}
+  }, "additionalProperties": false
+}

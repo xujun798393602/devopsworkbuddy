@@ -1,0 +1,7 @@
+# Shared test/tool dependency input for service, contract and deployment gates.
+pytest>=8.4,<9
+ruff>=0.12,<1
+PyYAML>=6.0.2,<7
+jsonschema>=4.23,<5
+openapi-spec-validator>=0.7.2,<1
+packaging>=24,<27

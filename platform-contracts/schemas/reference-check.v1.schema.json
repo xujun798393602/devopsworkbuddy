@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://devops.company.internal/schemas/reference-check.v1.schema.json",
+  "title": "Cross-service reference check v1",
+  "oneOf": [{"$ref": "#/$defs/request"}, {"$ref": "#/$defs/response"}],
+  "$defs": {
+    "reference": {"type": "object", "required": ["service", "type", "id"], "properties": {"service": {"type": "string"}, "type": {"type": "string"}, "id": {"type": "string"}, "version": {"type": ["integer", "string", "null"]}}, "additionalProperties": false},
+    "request": {"type": "object", "required": ["project_id", "references"], "properties": {"project_id": {"type": "string"}, "references": {"type": "array", "minItems": 1, "maxItems": 200, "items": {"$ref": "#/$defs/reference"}}}, "additionalProperties": false},
+    "result": {"type": "object", "required": ["reference", "exists", "same_project", "active"], "properties": {"reference": {"$ref": "#/$defs/reference"}, "exists": {"type": "boolean"}, "same_project": {"type": "boolean"}, "active": {"type": "boolean"}, "role": {"type": ["string", "null"]}}, "additionalProperties": false},
+    "response": {"type": "object", "required": ["results"], "properties": {"results": {"type": "array", "maxItems": 200, "items": {"$ref": "#/$defs/result"}}}, "additionalProperties": false}
+  }
+}

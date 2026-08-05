@@ -1,0 +1,1069 @@
+openapi: 3.1.0
+info:
+  title: Project Collaboration API
+  version: 0.4.0
+  description: |
+    Golden sample project service for the company DevOps platform.
+    Supports projects, members, versions, iterations, tasks, and Worklogs
+    with idempotent writes, optimistic concurrency, and audit/Outbox.
+servers:
+  - url: /
+paths:
+  /health:
+    get:
+      operationId: health
+      summary: Liveness probe
+      responses:
+        '200':
+          description: Service is alive
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, example: ok}
+                  service: {type: string}
+  /ready:
+    get:
+      operationId: ready
+      summary: Readiness probe
+      responses:
+        '200':
+          description: Service is ready
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  status: {type: string, example: ok}
+                  checks:
+                    type: object
+                    properties:
+                      database:
+                        type: object
+                        properties:
+                          status: {type: string, example: ok}
+        '503':
+          description: Service is unavailable
+          content:
+            application/problem+json:
+              schema: {$ref: '#/components/schemas/ProblemDetails'}
+  /api/v1/projects:
+    get:
+      operationId: listProjects
+      summary: List projects for the actor
+      responses:
+        '200':
+          description: Projects visible to the actor
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProjectListResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: createProject
+      summary: Create a project (idempotent)
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateProjectRequest'}
+      responses:
+        '201':
+          description: Project created (or replayed)
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+              description: Strong ETag containing the resource version
+            Idempotency-Replayed:
+              schema: {type: string, enum: ['true']}
+              description: Present when the response is a replay of a prior request
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProjectResponse'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/v1/projects/{project_id}:
+    parameters:
+      - {$ref: '#/components/parameters/ProjectId'}
+    get:
+      operationId: getProject
+      summary: Get a single project
+      responses:
+        '200':
+          description: The project
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/ProjectResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+  /api/v1/projects/{project_id}/members:
+    parameters:
+      - {$ref: '#/components/parameters/ProjectId'}
+    get:
+      operationId: listMembers
+      summary: List active members
+      responses:
+        '200':
+          description: Active members
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MemberListResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: addMember
+      summary: Add a member (idempotent)
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/AddMemberRequest'}
+      responses:
+        '200':
+          description: Member already exists (replayed or existing)
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+            Idempotency-Replayed:
+              schema: {type: string, enum: ['true']}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MemberResponse'}
+        '201':
+          description: Member added
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+            Idempotency-Replayed:
+              schema: {type: string, enum: ['true']}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MemberResponse'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/v1/projects/{project_id}/members/{membership_id}:
+    parameters:
+      - {$ref: '#/components/parameters/ProjectId'}
+      - {$ref: '#/components/parameters/MembershipId'}
+    patch:
+      operationId: changeMemberRole
+      summary: Change a member role (idempotent, optimistic)
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {$ref: '#/components/parameters/IfMatch'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/ChangeRoleRequest'}
+      responses:
+        '200':
+          description: Role updated
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+            Idempotency-Replayed:
+              schema: {type: string, enum: ['true']}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/MemberResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '412': {$ref: '#/components/responses/PreconditionFailed'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+    delete:
+      operationId: removeMember
+      summary: Remove a member (idempotent, optimistic)
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {$ref: '#/components/parameters/IfMatch'}
+      responses:
+        '204':
+          description: Member removed
+          headers:
+            Idempotency-Replayed:
+              schema: {type: string, enum: ['true']}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '412': {$ref: '#/components/responses/PreconditionFailed'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/v1/projects/{project_id}/owner-transfers:
+    parameters:
+      - {$ref: '#/components/parameters/ProjectId'}
+    post:
+      operationId: transferOwner
+      summary: Transfer ownership (idempotent)
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TransferOwnerRequest'}
+      responses:
+        '200':
+          description: Ownership transferred
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+            Idempotency-Replayed:
+              schema: {type: string, enum: ['true']}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/OwnerTransferResponse'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '412': {$ref: '#/components/responses/PreconditionFailed'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/v1/projects/{project_id}/versions:
+    parameters:
+      - {$ref: '#/components/parameters/ProjectId'}
+    get:
+      operationId: listVersions
+      summary: List release versions
+      responses:
+        '200':
+          description: Release versions
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/VersionListResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: createVersion
+      summary: Create a release version (idempotent)
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateVersionRequest'}
+      responses:
+        '201':
+          description: Version created
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+            Idempotency-Replayed:
+              schema: {type: string, enum: ['true']}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/VersionResponse'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/v1/projects/{project_id}/versions/{version_id}:
+    parameters:
+      - {$ref: '#/components/parameters/ProjectId'}
+      - {$ref: '#/components/parameters/VersionId'}
+    get:
+      operationId: getVersion
+      summary: Get a release version
+      responses:
+        '200':
+          description: The release version
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/VersionResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      operationId: updateVersion
+      summary: Update a release version (idempotent, optimistic)
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {$ref: '#/components/parameters/IfMatch'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateVersionRequest'}
+      responses:
+        '200':
+          description: Version updated
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+            Idempotency-Replayed:
+              schema: {type: string, enum: ['true']}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/VersionResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '412': {$ref: '#/components/responses/PreconditionFailed'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/v1/projects/{project_id}/versions/{version_id}/transitions:
+    parameters:
+      - {$ref: '#/components/parameters/ProjectId'}
+      - {$ref: '#/components/parameters/VersionId'}
+    post:
+      operationId: transitionVersion
+      summary: Transition a release version status (idempotent, optimistic)
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {$ref: '#/components/parameters/IfMatch'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TransitionRequest'}
+      responses:
+        '200':
+          description: Version transitioned
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+            Idempotency-Replayed:
+              schema: {type: string, enum: ['true']}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/VersionResponse'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '412': {$ref: '#/components/responses/PreconditionFailed'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/v1/projects/{project_id}/iterations:
+    parameters:
+      - {$ref: '#/components/parameters/ProjectId'}
+    get:
+      operationId: listIterations
+      summary: List iterations
+      responses:
+        '200':
+          description: Iterations
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IterationListResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: createIteration
+      summary: Create an iteration (idempotent)
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateIterationRequest'}
+      responses:
+        '201':
+          description: Iteration created
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+            Idempotency-Replayed:
+              schema: {type: string, enum: ['true']}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IterationResponse'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/v1/projects/{project_id}/iterations/{iteration_id}:
+    parameters:
+      - {$ref: '#/components/parameters/ProjectId'}
+      - {$ref: '#/components/parameters/IterationId'}
+    get:
+      operationId: getIteration
+      summary: Get an iteration
+      responses:
+        '200':
+          description: The iteration
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IterationResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      operationId: updateIteration
+      summary: Update an iteration (idempotent, optimistic)
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {$ref: '#/components/parameters/IfMatch'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateIterationRequest'}
+      responses:
+        '200':
+          description: Iteration updated
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+            Idempotency-Replayed:
+              schema: {type: string, enum: ['true']}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IterationResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '412': {$ref: '#/components/responses/PreconditionFailed'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/v1/projects/{project_id}/iterations/{iteration_id}/transitions:
+    parameters:
+      - {$ref: '#/components/parameters/ProjectId'}
+      - {$ref: '#/components/parameters/IterationId'}
+    post:
+      operationId: transitionIteration
+      summary: Transition an iteration status (idempotent, optimistic)
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {$ref: '#/components/parameters/IfMatch'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TransitionRequest'}
+      responses:
+        '200':
+          description: Iteration transitioned
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+            Idempotency-Replayed:
+              schema: {type: string, enum: ['true']}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/IterationResponse'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '412': {$ref: '#/components/responses/PreconditionFailed'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/v1/projects/{project_id}/tasks:
+    parameters:
+      - {$ref: '#/components/parameters/ProjectId'}
+    get:
+      operationId: listTasks
+      summary: List tasks with stable cursor pagination
+      parameters:
+        - {$ref: '#/components/parameters/Limit'}
+        - {$ref: '#/components/parameters/Cursor'}
+      responses:
+        '200':
+          description: A page of tasks
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskListResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+    post:
+      operationId: createTask
+      summary: Create a task (idempotent)
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CreateTaskRequest'}
+      responses:
+        '201':
+          description: Task created
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+            Idempotency-Replayed:
+              schema: {type: string, enum: ['true']}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskResponse'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/v1/projects/{project_id}/tasks/{task_id}:
+    parameters:
+      - {$ref: '#/components/parameters/ProjectId'}
+      - {$ref: '#/components/parameters/TaskId'}
+    get:
+      operationId: getTask
+      summary: Get a task
+      responses:
+        '200':
+          description: The task
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskResponse'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    patch:
+      operationId: updateTask
+      summary: Update a task (idempotent, optimistic)
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {$ref: '#/components/parameters/IfMatch'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/UpdateTaskRequest'}
+      responses:
+        '200':
+          description: Task updated
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+            Idempotency-Replayed:
+              schema: {type: string, enum: ['true']}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskResponse'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '412': {$ref: '#/components/responses/PreconditionFailed'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/v1/projects/{project_id}/tasks/{task_id}/transitions:
+    parameters:
+      - {$ref: '#/components/parameters/ProjectId'}
+      - {$ref: '#/components/parameters/TaskId'}
+    post:
+      operationId: transitionTask
+      summary: Transition a task status (idempotent, optimistic)
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+        - {$ref: '#/components/parameters/IfMatch'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/TaskTransitionRequest'}
+      responses:
+        '200':
+          description: Task transitioned
+          headers:
+            ETag:
+              schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+            Idempotency-Replayed:
+              schema: {type: string, enum: ['true']}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/TaskResponse'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '412': {$ref: '#/components/responses/PreconditionFailed'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/v1/projects/{project_id}/tasks/{task_id}/worklogs:
+    parameters:
+      - {$ref: '#/components/parameters/ProjectId'}
+      - {$ref: '#/components/parameters/TaskId'}
+    get:
+      operationId: listWorklogs
+      summary: List Worklogs for a task
+      responses:
+        '200':
+          description: Worklogs
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WorklogListResponse'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+    post:
+      operationId: recordWorklog
+      summary: Record a Worklog (idempotent)
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/RecordWorklogRequest'}
+      responses:
+        '201':
+          description: Worklog recorded
+          headers:
+            Idempotency-Replayed:
+              schema: {type: string, enum: ['true']}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WorklogResponse'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+  /api/v1/projects/{project_id}/tasks/{task_id}/worklogs/{worklog_id}/corrections:
+    parameters:
+      - {$ref: '#/components/parameters/ProjectId'}
+      - {$ref: '#/components/parameters/TaskId'}
+      - {$ref: '#/components/parameters/WorklogId'}
+    post:
+      operationId: correctWorklog
+      summary: Correct a Worklog with a delta (idempotent)
+      parameters:
+        - {$ref: '#/components/parameters/IdempotencyKey'}
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/CorrectWorklogRequest'}
+      responses:
+        '201':
+          description: Worklog correction recorded
+          headers:
+            Idempotency-Replayed:
+              schema: {type: string, enum: ['true']}
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/WorklogResponse'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+        '404': {$ref: '#/components/responses/NotFound'}
+        '409': {$ref: '#/components/responses/Conflict'}
+        '422': {$ref: '#/components/responses/ValidationError'}
+components:
+  parameters:
+    ProjectId:
+      name: project_id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    MembershipId:
+      name: membership_id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    VersionId:
+      name: version_id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    IterationId:
+      name: iteration_id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    TaskId:
+      name: task_id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    WorklogId:
+      name: worklog_id
+      in: path
+      required: true
+      schema: {type: string, format: uuid}
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: true
+      schema: {type: string, minLength: 1, maxLength: 255}
+      description: Unique key for safe request replay
+    IfMatch:
+      name: If-Match
+      in: header
+      required: true
+      schema: {type: string, pattern: '^"[1-9][0-9]*"$'}
+      description: Strong ETag for optimistic concurrency control
+    Limit:
+      name: limit
+      in: query
+      schema: {type: integer, minimum: 1, maximum: 200, default: 50}
+      description: Maximum number of items per page
+    Cursor:
+      name: after
+      in: query
+      schema: {type: string}
+      description: Opaque cursor from a previous page's next_cursor
+  responses:
+    NotFound:
+      description: Resource not found
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/ProblemDetails'}
+    Forbidden:
+      description: The actor is not allowed to perform this action
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/ProblemDetails'}
+    Conflict:
+      description: Request conflicts with the current resource state
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/ProblemDetails'}
+    PreconditionFailed:
+      description: If-Match version does not match the current resource version
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/ProblemDetails'}
+    ValidationError:
+      description: Request body or parameters are invalid
+      content:
+        application/problem+json:
+          schema: {$ref: '#/components/schemas/ProblemDetails'}
+  schemas:
+    ProblemDetails:
+      type: object
+      required: [type, title, status, detail, error_code, trace_id]
+      properties:
+        type: {type: string, default: 'about:blank'}
+        title: {type: string, description: Error code}
+        status: {type: integer}
+        detail: {type: string}
+        error_code: {type: string}
+        trace_id: {type: string}
+        errors:
+          type: array
+          items:
+            type: object
+            properties:
+              field: {type: string}
+              message: {type: string}
+    ResponseMeta:
+      type: object
+      required: [trace_id]
+      properties:
+        trace_id: {type: string}
+        next_cursor:
+          type: string
+          nullable: true
+          description: Opaque cursor for the next page; null when no more items
+        has_more:
+          type: boolean
+          description: Whether more items exist after this page
+    # --- Project schemas ---
+    CreateProjectRequest:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 120}
+        description: {type: string, default: ''}
+        owner_id: {type: string, description: Defaults to the actor if omitted}
+    ProjectData:
+      type: object
+      required: [id, business_no, name, description, owner_id, status, version, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        business_no: {type: string}
+        name: {type: string}
+        description: {type: string}
+        owner_id: {type: string}
+        status: {type: string, enum: [active, archived]}
+        version: {type: integer}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    ProjectResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data: {$ref: '#/components/schemas/ProjectData'}
+        meta: {$ref: '#/components/schemas/ResponseMeta'}
+    ProjectListResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/ProjectData'}
+        meta: {$ref: '#/components/schemas/ResponseMeta'}
+    # --- Member schemas ---
+    AddMemberRequest:
+      type: object
+      required: [user_id, role]
+      properties:
+        user_id: {type: string, minLength: 1}
+        role: {type: string, enum: [admin, member, viewer]}
+    ChangeRoleRequest:
+      type: object
+      required: [role]
+      properties:
+        role: {type: string, enum: [admin, member, viewer]}
+    TransferOwnerRequest:
+      type: object
+      required: [new_owner_user_id]
+      properties:
+        new_owner_user_id: {type: string, minLength: 1}
+    MemberData:
+      type: object
+      required: [id, project_id, user_id, role, status, joined_at, joined_by, version]
+      properties:
+        id: {type: string, format: uuid}
+        project_id: {type: string, format: uuid}
+        user_id: {type: string}
+        role: {type: string, enum: [owner, admin, member, viewer]}
+        status: {type: string, enum: [active, removed]}
+        joined_at: {type: string, format: date-time}
+        joined_by: {type: string}
+        removed_at: {type: string, format: date-time, nullable: true}
+        removed_by: {type: string, nullable: true}
+        version: {type: integer}
+    MemberResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data: {$ref: '#/components/schemas/MemberData'}
+        meta: {$ref: '#/components/schemas/ResponseMeta'}
+    MemberListResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/MemberData'}
+        meta: {$ref: '#/components/schemas/ResponseMeta'}
+    OwnerTransferResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: object
+          required: [previous_owner, new_owner]
+          properties:
+            previous_owner: {$ref: '#/components/schemas/MemberData'}
+            new_owner: {$ref: '#/components/schemas/MemberData'}
+        meta: {$ref: '#/components/schemas/ResponseMeta'}
+    # --- Version schemas ---
+    CreateVersionRequest:
+      type: object
+      required: [name]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 120}
+        description: {type: string, default: ''}
+        planned_release_date: {type: string, format: date, nullable: true}
+    UpdateVersionRequest:
+      type: object
+      properties:
+        name: {type: string, minLength: 1, maxLength: 120}
+        description: {type: string}
+        planned_release_date: {type: string, format: date, nullable: true}
+    VersionData:
+      type: object
+      required: [id, project_id, business_no, name, description, status, version, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        project_id: {type: string, format: uuid}
+        business_no: {type: string}
+        name: {type: string}
+        description: {type: string}
+        status: {type: string, enum: [planned, active, released, canceled, archived]}
+        planned_release_date: {type: string, format: date, nullable: true}
+        release_date: {type: string, format: date, nullable: true}
+        version: {type: integer}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    VersionResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data: {$ref: '#/components/schemas/VersionData'}
+        meta: {$ref: '#/components/schemas/ResponseMeta'}
+    VersionListResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/VersionData'}
+        meta: {$ref: '#/components/schemas/ResponseMeta'}
+    # --- Iteration schemas ---
+    CreateIterationRequest:
+      type: object
+      required: [name, start_date, end_date]
+      properties:
+        name: {type: string, minLength: 1, maxLength: 120}
+        goal: {type: string, default: ''}
+        start_date: {type: string, format: date}
+        end_date: {type: string, format: date}
+        capacity_minutes: {type: integer, minimum: 0, nullable: true}
+    UpdateIterationRequest:
+      type: object
+      properties:
+        name: {type: string, minLength: 1, maxLength: 120}
+        goal: {type: string}
+        start_date: {type: string, format: date}
+        end_date: {type: string, format: date}
+        capacity_minutes: {type: integer, minimum: 0, nullable: true}
+    IterationData:
+      type: object
+      required: [id, project_id, business_no, name, goal, start_date, end_date, status, version, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        project_id: {type: string, format: uuid}
+        business_no: {type: string}
+        name: {type: string}
+        goal: {type: string}
+        start_date: {type: string, format: date}
+        end_date: {type: string, format: date}
+        capacity_minutes: {type: integer, nullable: true}
+        status: {type: string, enum: [planned, active, completed, canceled]}
+        version: {type: integer}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+    IterationResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data: {$ref: '#/components/schemas/IterationData'}
+        meta: {$ref: '#/components/schemas/ResponseMeta'}
+    IterationListResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/IterationData'}
+        meta: {$ref: '#/components/schemas/ResponseMeta'}
+    # --- Transition schema (shared) ---
+    TransitionRequest:
+      type: object
+      required: [target_status]
+      properties:
+        target_status: {type: string}
+        force:
+          type: boolean
+          default: false
+          description: Force transition even when open tasks exist (requires reason)
+        reason:
+          type: string
+          nullable: true
+          description: Required when force is true; must be non-empty after trim
+    # --- Task schemas ---
+    CreateTaskRequest:
+      type: object
+      required: [title, release_version_id]
+      properties:
+        title: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string, default: ''}
+        task_type: {type: string, default: other}
+        priority: {type: string, enum: [p1, p2, p3], default: p2}
+        assignee_id: {type: string, nullable: true}
+        release_version_id: {type: string, format: uuid}
+        iteration_id: {type: string, format: uuid, nullable: true}
+        participant_ids:
+          type: array
+          items: {type: string}
+          default: []
+        estimated_minutes: {type: integer, minimum: 0, default: 0}
+        planned_start_at: {type: string, format: date-time, nullable: true}
+        planned_end_at: {type: string, format: date-time, nullable: true}
+    UpdateTaskRequest:
+      type: object
+      properties:
+        title: {type: string, minLength: 1, maxLength: 200}
+        description: {type: string}
+        task_type: {type: string}
+        priority: {type: string, enum: [p1, p2, p3]}
+        assignee_id: {type: string, nullable: true}
+        release_version_id: {type: string, format: uuid}
+        iteration_id: {type: string, format: uuid, nullable: true}
+        participant_ids:
+          type: array
+          items: {type: string}
+        estimated_minutes: {type: integer, minimum: 0}
+        planned_start_at: {type: string, format: date-time, nullable: true}
+        planned_end_at: {type: string, format: date-time, nullable: true}
+    TaskTransitionRequest:
+      type: object
+      required: [target_status]
+      properties:
+        target_status: {type: string, enum: [todo, in_progress, done, closed, canceled]}
+    TaskData:
+      type: object
+      required: [id, business_no, project_id, title, description, task_type, priority, status, creator_id, estimated_minutes, workflow_template_key, workflow_version, version, created_at, updated_at]
+      properties:
+        id: {type: string, format: uuid}
+        business_no: {type: string}
+        project_id: {type: string, format: uuid}
+        title: {type: string}
+        description: {type: string}
+        task_type: {type: string}
+        priority: {type: string}
+        status: {type: string, enum: [todo, in_progress, done, closed, canceled]}
+        creator_id: {type: string}
+        assignee_id: {type: string, nullable: true}
+        release_version_id: {type: string, format: uuid, nullable: true}
+        iteration_id: {type: string, format: uuid, nullable: true}
+        planned_start_at: {type: string, format: date-time, nullable: true}
+        planned_end_at: {type: string, format: date-time, nullable: true}
+        actual_start_at: {type: string, format: date-time, nullable: true}
+        actual_end_at: {type: string, format: date-time, nullable: true}
+        estimated_minutes: {type: integer}
+        workflow_template_key: {type: string}
+        workflow_version: {type: integer}
+        version: {type: integer}
+        created_at: {type: string, format: date-time}
+        updated_at: {type: string, format: date-time}
+        participant_ids:
+          type: array
+          items: {type: string}
+        actual_minutes: {type: integer}
+    TaskResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data: {$ref: '#/components/schemas/TaskData'}
+        meta: {$ref: '#/components/schemas/ResponseMeta'}
+    TaskListResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/TaskData'}
+        meta: {$ref: '#/components/schemas/ResponseMeta'}
+    # --- Worklog schemas ---
+    RecordWorklogRequest:
+      type: object
+      required: [work_date, minutes_delta, description]
+      properties:
+        user_id: {type: string, description: Defaults to the actor if omitted}
+        work_date: {type: string, format: date}
+        minutes_delta: {type: integer, minimum: 1, maximum: 1440}
+        description: {type: string, minLength: 1, maxLength: 2000}
+    CorrectWorklogRequest:
+      type: object
+      required: [work_date, minutes_delta, description, correction_reason]
+      properties:
+        user_id: {type: string, description: Must match the original Worklog user}
+        work_date: {type: string, format: date}
+        minutes_delta: {type: integer, minimum: -1440, maximum: 1440}
+        description: {type: string, minLength: 1, maxLength: 2000}
+        correction_reason: {type: string, minLength: 1}
+    WorklogData:
+      type: object
+      required: [id, project_id, task_id, user_id, recorded_by, work_date, minutes_delta, description, created_at]
+      properties:
+        id: {type: string, format: uuid}
+        project_id: {type: string, format: uuid}
+        task_id: {type: string, format: uuid}
+        user_id: {type: string}
+        recorded_by: {type: string}
+        work_date: {type: string, format: date}
+        minutes_delta: {type: integer}
+        description: {type: string}
+        corrects_worklog_id: {type: string, format: uuid, nullable: true}
+        correction_reason: {type: string, nullable: true}
+        created_at: {type: string, format: date-time}
+    WorklogResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data: {$ref: '#/components/schemas/WorklogData'}
+        meta: {$ref: '#/components/schemas/ResponseMeta'}
+    WorklogListResponse:
+      type: object
+      required: [data, meta]
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/WorklogData'}
+        meta: {$ref: '#/components/schemas/ResponseMeta'}

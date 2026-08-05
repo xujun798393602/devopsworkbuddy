@@ -1,0 +1,5 @@
+import { ApiProblem, type ProblemDetails } from './problem';
+let refreshPromise:Promise<boolean>|null=null;
+function csrf():string { return document.cookie.split('; ').find(v=>v.startsWith('devops_csrf='))?.split('=')[1]??''; }
+async function refresh():Promise<boolean>{ if(!refreshPromise) refreshPromise=fetch('/bff/auth/refresh',{method:'POST',credentials:'include',headers:{'X-CSRF-Token':csrf()}}).then(r=>r.ok).finally(()=>{refreshPromise=null}); return refreshPromise; }
+export async function api<T>(path:string,init:RequestInit={},replayed=false):Promise<T>{ const method=(init.method??'GET').toUpperCase();const headers=new Headers(init.headers);if(!['GET','HEAD','OPTIONS'].includes(method))headers.set('X-CSRF-Token',csrf());const response=await fetch(path,{...init,headers,credentials:'include'});if(response.status===401&&!replayed&&await refresh())return api<T>(path,init,true);if(!response.ok)throw new ApiProblem(await response.json() as ProblemDetails);return response.status===204?undefined as T:await response.json() as T; }

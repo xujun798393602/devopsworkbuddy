@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://devops.company.internal/schemas/td-events.v1.schema.json",
+  "title": "Defect domain event data v1",
+  "type": "object",
+  "required": ["event_type", "defect_id", "business_no", "status", "severity", "version"],
+  "properties": {
+    "event_type": {"enum": ["Defect.Created", "Defect.Assigned", "Defect.Fixed", "Defect.PendingVerification", "Defect.Closed", "Defect.Reopened", "Defect.SlaBreached", "Defect.DuplicateLinked"]},
+    "defect_id": {"type": "string", "format": "uuid"}, "business_no": {"type": "string", "pattern": "^TD-"},
+    "status": {"type": "string"}, "severity": {"enum": ["blocker", "critical", "major", "minor", "trivial"]},
+    "version": {"type": "integer", "minimum": 1}, "assignee_id": {"type": ["string", "null"]},
+    "verifier_id": {"type": ["string", "null"]}, "reopen_count": {"type": "integer", "minimum": 0},
+    "master_defect_id": {"type": "string", "format": "uuid"}, "fix_version_id": {"type": "string"},
+    "recipient_ids": {"type": "array", "maxItems": 200, "items": {"type": "string"}}
+  }, "additionalProperties": false
+}

@@ -1,0 +1,34 @@
+openapi: 3.1.0
+info: {title: Requirement Service API, version: 1.0.0}
+servers: [{url: /}]
+paths:
+  /health: {get: {operationId: requirementHealth, responses: {'200': {description: Healthy}}}}
+  /ready: {get: {operationId: requirementReady, responses: {'200': {description: Ready}, '503': {$ref: common.yaml#/components/responses/Problem}}}}
+  /api/v1/projects/{project_id}/requirements:
+    get: {operationId: listRequirements, parameters: [{$ref: '#/components/parameters/ProjectId'}, {$ref: '#/components/parameters/Cursor'}], responses: {'200': {description: Requirements}}}
+    post: {operationId: createRequirement, parameters: [{$ref: '#/components/parameters/ProjectId'}, {$ref: '#/components/parameters/IdempotencyKey'}], requestBody: {$ref: '#/components/requestBodies/Json'}, responses: {'201': {description: Created}, '409': {$ref: common.yaml#/components/responses/Problem}}}
+  /api/v1/projects/{project_id}/requirements/{requirement_id}:
+    get: {operationId: getRequirement, parameters: [{$ref: '#/components/parameters/ProjectId'}, {$ref: '#/components/parameters/RequirementId'}], responses: {'200': {description: Requirement}, '404': {$ref: common.yaml#/components/responses/Problem}}}
+    patch: {operationId: patchRequirement, parameters: [{$ref: '#/components/parameters/ProjectId'}, {$ref: '#/components/parameters/RequirementId'}, {$ref: '#/components/parameters/IdempotencyKey'}, {$ref: '#/components/parameters/IfMatch'}], requestBody: {$ref: '#/components/requestBodies/Json'}, responses: {'200': {description: Updated}, '412': {$ref: common.yaml#/components/responses/Problem}}}
+  /api/v1/projects/{project_id}/requirements/{requirement_id}/transitions: {$ref: '#/components/pathItems/Command'}
+  /api/v1/projects/{project_id}/requirements/{requirement_id}/reviews: {$ref: '#/components/pathItems/Collection'}
+  /api/v1/projects/{project_id}/requirements/{requirement_id}/reviews/{review_id}/decisions: {$ref: '#/components/pathItems/Command'}
+  /api/v1/projects/{project_id}/requirement-baselines: {$ref: '#/components/pathItems/Collection'}
+  /api/v1/projects/{project_id}/requirement-baselines/{baseline_id}: {$ref: '#/components/pathItems/ReadOnly'}
+  /api/v1/projects/{project_id}/requirement-baselines/{baseline_id}/activate: {$ref: '#/components/pathItems/Command'}
+  /api/v1/projects/{project_id}/requirements/{requirement_id}/change-requests: {$ref: '#/components/pathItems/Collection'}
+  /internal/api/v1/references/check:
+    post: {operationId: checkRequirementReferences, parameters: [{$ref: '#/components/parameters/IdempotencyKey'}], requestBody: {$ref: '#/components/requestBodies/Json'}, responses: {'200': {description: Results}, '503': {$ref: common.yaml#/components/responses/Problem}}}
+components:
+  parameters:
+    ProjectId: {name: project_id, in: path, required: true, schema: {type: string}}
+    RequirementId: {name: requirement_id, in: path, required: true, schema: {type: string, format: uuid}}
+    Cursor: {name: cursor, in: query, schema: {type: string}}
+    IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 255}}
+    IfMatch: {name: If-Match, in: header, required: true, schema: {type: string, pattern: '^\"[1-9][0-9]*\"$'}}
+  requestBodies:
+    Json: {required: true, content: {application/json: {schema: {type: object}}}}
+  pathItems:
+    Command: {post: {parameters: [{$ref: '#/components/parameters/ProjectId'}, {$ref: '#/components/parameters/IdempotencyKey'}, {$ref: '#/components/parameters/IfMatch'}], requestBody: {$ref: '#/components/requestBodies/Json'}, responses: {'200': {description: Applied}, '409': {$ref: common.yaml#/components/responses/Problem}, '412': {$ref: common.yaml#/components/responses/Problem}}}}
+    Collection: {get: {parameters: [{$ref: '#/components/parameters/ProjectId'}], responses: {'200': {description: Collection}}}, post: {parameters: [{$ref: '#/components/parameters/ProjectId'}, {$ref: '#/components/parameters/IdempotencyKey'}], requestBody: {$ref: '#/components/requestBodies/Json'}, responses: {'201': {description: Created}}}}
+    ReadOnly: {get: {parameters: [{$ref: '#/components/parameters/ProjectId'}], responses: {'200': {description: Resource}, '404': {$ref: common.yaml#/components/responses/Problem}}}}

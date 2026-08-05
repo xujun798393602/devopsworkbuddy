@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://devops.company.internal/schemas/automation-result.v1.schema.json",
+  "title": "Restricted automation result ingestion v1",
+  "type": "object",
+  "required": ["source", "external_run_ref", "format", "results"],
+  "properties": {
+    "source": {"enum": ["mock", "external"]}, "external_run_ref": {"type": "string", "minLength": 1, "maxLength": 500},
+    "format": {"const": "json"},
+    "results": {"type": "array", "maxItems": 10000, "items": {"type": "object", "required": ["external_case_ref", "status"], "properties": {"external_case_ref": {"type": "string", "maxLength": 500}, "case_version_id": {"type": ["string", "null"]}, "status": {"enum": ["passed", "failed", "blocked", "skipped"]}, "duration_ms": {"type": "integer", "minimum": 0}, "summary": {"type": "string", "maxLength": 2000}}, "additionalProperties": false}}
+  }, "additionalProperties": false
+}

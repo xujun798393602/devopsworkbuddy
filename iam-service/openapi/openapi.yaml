@@ -1,0 +1,15 @@
+openapi: 3.1.0
+info: {title: IAM Service, version: 1.0.0}
+paths:
+  /api/v1/auth/login:
+    post:
+      responses: {'201': {description: Session created}, '401': {description: Authentication failed}}
+  /api/v1/auth/refresh:
+    post:
+      responses: {'200': {description: Session rotated}, '401': {description: Refresh rejected}}
+  /api/v1/auth/logout:
+    post:
+      responses: {'204': {description: Session revoked}}
+  /api/v1/me:
+    get:
+      responses: {'200': {description: Current principal}, '401': {description: Invalid token}}

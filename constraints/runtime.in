@@ -1,0 +1,12 @@
+# Shared runtime/build dependency input for the six Python services.
+# Keep this list bounded to declared project dependencies and their build frontend.
+Flask>=3.1,<4
+SQLAlchemy>=2.0.41,<2.1
+psycopg[binary]>=3.2.9,<4
+Alembic>=1.16.4,<2
+gunicorn>=23,<24
+PyJWT[crypto]>=2.10,<3
+argon2-cffi>=25,<26
+pyotp>=2.9,<3
+Jinja2>=3.1,<4
+setuptools>=75,<81

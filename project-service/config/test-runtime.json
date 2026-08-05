@@ -1,0 +1,5 @@
+{
+  "manifest_sha256": "92f163f66bbeba21486b5d684edd0571653857b624805bcc73e704182f86860d",
+  "runtime_path": "/project/devops-platform/shared/test-runtimes/project-service-py312-v1",
+  "schema_version": 1
+}

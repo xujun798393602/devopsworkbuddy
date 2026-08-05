@@ -1,0 +1,53 @@
+name: ${COMPOSE_PROJECT_NAME:-wkdevops-project-service}
+x-app-build: &app-build
+  context: ..
+  dockerfile: project-service/Dockerfile
+  args:
+    PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.13-slim}
+    PYTHON_IMPLEMENTATION: ${PYTHON_IMPLEMENTATION:-cp313}
+    PYTHON_VERSION_EXPECTED: ${PYTHON_VERSION_EXPECTED:-3.13}
+    WHEELHOUSE_DIR: ${WHEELHOUSE_DIR:-wheelhouse/linux-x86_64-cp313}
+    LOCK_FILE: ${LOCK_FILE:-constraints/cp313-linux-x86_64.txt}
+services:
+  db:
+    image: postgres:17-alpine
+    container_name: ${DB_CONTAINER_NAME:-wkDEVOPS-project-service-postgres-dev}
+    environment:
+      POSTGRES_DB: project_service
+      POSTGRES_USER: project_service
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+    volumes:
+      - project_service_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U project_service -d project_service"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+  migrate:
+    image: ${APP_IMAGE:-wkdevops/project-service:dev-py313}
+    build: *app-build
+    container_name: ${MIGRATE_CONTAINER_NAME:-wkDEVOPS-project-service-migrate-dev}
+    command: ["alembic", "upgrade", "head"]
+    environment:
+      DATABASE_URL: postgresql+psycopg://project_service:${POSTGRES_PASSWORD}@db/project_service
+      PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.13-slim}
+      WHEELHOUSE_ID: ${WHEELHOUSE_ID:-cp313-production}
+    depends_on:
+      db:
+        condition: service_healthy
+  api:
+    image: ${APP_IMAGE:-wkdevops/project-service:dev-py313}
+    build: *app-build
+    container_name: ${API_CONTAINER_NAME:-wkDEVOPS-project-service-api-dev}
+    ports: ["${PROJECT_SERVICE_PORT:-18080}:8080"]
+    environment:
+      APP_ENV: container
+      DATABASE_URL: postgresql+psycopg://project_service:${POSTGRES_PASSWORD}@db/project_service
+      PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.13-slim}
+      WHEELHOUSE_ID: ${WHEELHOUSE_ID:-cp313-production}
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+volumes:
+  project_service_data:
+    name: ${DB_VOLUME_NAME:-wkDEVOPS-project-service-data-dev}

@@ -1,0 +1,5 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://devops.company.internal/schemas/iam-session.schema.json","title":"IAM session","type":"object",
+  "required":["session_id","user_id","family_id","auth_method","status","issued_at","expires_at","version"],
+  "properties":{"session_id":{"type":"string"},"user_id":{"type":"string"},"family_id":{"type":"string"},"auth_method":{"enum":["oidc","local_dev","break_glass"]},"status":{"enum":["active","revoked","expired"]},"issued_at":{"type":"string","format":"date-time"},"expires_at":{"type":"string","format":"date-time"},"version":{"type":"integer","minimum":1}},"additionalProperties":false
+}

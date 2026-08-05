@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://devops.company.internal/schemas/traceability-events.v1.schema.json",
+  "title": "Traceability domain event data v1",
+  "type": "object",
+  "required": ["event_type", "link_id", "source", "target", "link_type", "status", "version"],
+  "properties": {
+    "event_type": {"enum": ["Traceability.LinkCreated", "Traceability.LinkSuperseded", "Traceability.ProjectionUpdated"]},
+    "link_id": {"type": "string", "format": "uuid"},
+    "source": {"$ref": "#/$defs/endpoint"}, "target": {"$ref": "#/$defs/endpoint"},
+    "link_type": {"enum": ["parent_of", "implemented_by", "evidenced_by", "analyzed_by", "covered_by", "included_in", "executed_as", "found", "affects", "detected_by", "fixed_by", "verified_by", "targeted_to", "released_by"]},
+    "status": {"enum": ["active", "superseded", "broken"]}, "version": {"type": "integer", "minimum": 1},
+    "verified_at": {"type": ["string", "null"], "format": "date-time"}
+  }, "additionalProperties": false,
+  "$defs": {"endpoint": {"type": "object", "required": ["service", "type", "id", "version"], "properties": {"service": {"type": "string"}, "type": {"type": "string"}, "id": {"type": "string"}, "version": {"type": ["integer", "string"]}}, "additionalProperties": false}}
+}

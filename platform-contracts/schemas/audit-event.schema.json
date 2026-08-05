@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://devops.company.internal/schemas/audit-event.schema.json",
+  "title": "Audit event",
+  "type": "object",
+  "required": ["audit_id", "occurred_at", "trace_id", "actor", "project_id", "resource", "action", "source", "result"],
+  "properties": {
+    "audit_id": {"type": "string", "minLength": 1},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "trace_id": {"type": "string", "minLength": 1},
+    "actor": {
+      "type": "object",
+      "required": ["type", "id"],
+      "properties": {
+        "type": {"enum": ["user", "service", "system"]},
+        "id": {"type": "string", "minLength": 1}
+      },
+      "additionalProperties": false
+    },
+    "project_id": {"type": ["string", "null"]},
+    "resource": {
+      "type": "object",
+      "required": ["type", "id"],
+      "properties": {
+        "type": {"type": "string"},
+        "id": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "action": {"type": "string", "minLength": 1},
+    "before": {"type": ["object", "null"]},
+    "after": {"type": ["object", "null"]},
+    "source": {
+      "type": "object",
+      "required": ["service"],
+      "properties": {
+        "service": {"type": "string"},
+        "ip": {"type": ["string", "null"]},
+        "client": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "result": {
+      "type": "object",
+      "required": ["status"],
+      "properties": {
+        "status": {"enum": ["success", "failure"]},
+        "reason": {"type": ["string", "null"]}
+      },
+      "additionalProperties": false
+    },
+    "approval_id": {"type": ["string", "null"]}
+  },
+  "additionalProperties": false
+}

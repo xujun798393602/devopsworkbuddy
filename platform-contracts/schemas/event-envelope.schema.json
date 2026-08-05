@@ -1,0 +1,26 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://devops.company.internal/schemas/event-envelope.schema.json",
+  "title": "Platform domain event envelope v1",
+  "type": "object",
+  "required": ["event_id", "event_type", "event_version", "occurred_at", "producer", "trace_id", "project_id", "actor", "aggregate", "data", "security"],
+  "properties": {
+    "event_id": {"type": "string", "minLength": 1},
+    "event_type": {"type": "string", "pattern": "^[A-Z][A-Za-z0-9]+\\.[A-Z][A-Za-z0-9]+$"},
+    "event_version": {"type": "integer", "minimum": 1},
+    "occurred_at": {"type": "string", "format": "date-time"},
+    "producer": {"type": "string", "minLength": 1},
+    "trace_id": {"type": "string", "minLength": 1},
+    "project_id": {"type": ["string", "null"], "minLength": 1},
+    "actor": {"$ref": "identity-context.schema.json#/$defs/actor"},
+    "aggregate": {
+      "type": "object",
+      "required": ["type", "id", "version"],
+      "properties": {"type": {"type": "string", "minLength": 1}, "id": {"type": "string", "minLength": 1}, "version": {"type": "integer", "minimum": 1}},
+      "additionalProperties": false
+    },
+    "data": {"type": "object"},
+    "security": {"type": "object", "required": ["classification"], "properties": {"classification": {"enum": ["public", "internal", "confidential", "restricted"]}}, "additionalProperties": false}
+  },
+  "additionalProperties": false
+}

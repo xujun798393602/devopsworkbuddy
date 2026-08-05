@@ -1,0 +1,4 @@
+import { defineStore } from 'pinia';
+import { api } from '../api/client';
+interface Principal{id:string;username:string;display_name:string;permissions:string[];break_glass:boolean}
+export const useAuthStore=defineStore('auth',{state:()=>({principal:null as Principal|null,initialized:false}),getters:{authenticated:s=>s.principal!==null},actions:{async initialize(){try{const r=await api<{data:{principal?:Principal}}>('/bff/session');this.principal=r.data.principal??null}finally{this.initialized=true}},has(permission:string){return this.principal?.permissions.includes(permission)??false},async login(username:string){const r=await api<{data:{principal:Principal}}>('/bff/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username})});this.principal=r.data.principal},async logout(){await api('/bff/auth/logout',{method:'POST'});this.principal=null}}});

@@ -1,0 +1,5 @@
+{
+  "$schema":"https://json-schema.org/draft/2020-12/schema","$id":"https://devops.company.internal/schemas/notification-event.schema.json","title":"Notification event","type":"object",
+  "required":["recipient_id","source_event_id","template_key","category","variables"],
+  "properties":{"recipient_id":{"type":"string","minLength":1},"source_event_id":{"type":"string","minLength":1},"template_key":{"type":"string","minLength":1},"category":{"enum":["security","workflow","project","general"]},"variables":{"type":"object"},"target_url":{"type":["string","null"],"pattern":"^/app/"}},"additionalProperties":false
+}

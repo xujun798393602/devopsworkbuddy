@@ -1,0 +1,35 @@
+openapi: 3.1.0
+info: {title: Notification Service, version: 1.0.0}
+paths:
+  /internal/api/v1/notifications:
+    post: {responses: {'201': {description: Idempotently ingested}, '403': {description: Ingest forbidden}}}
+  /api/v1/me/notifications:
+    get: {responses: {'200': {description: Recipient isolated notifications}}}
+  /api/v1/me/notifications/unread-count:
+    get: {responses: {'200': {description: Unread count}}}
+  /api/v1/me/notifications/{delivery_id}:
+    parameters:
+      - {$ref: '#/components/parameters/DeliveryId'}
+    get: {responses: {'200': {description: Notification detail}, '404': {description: Hidden or missing}}}
+  /api/v1/me/notifications/{delivery_id}/read:
+    parameters:
+      - {$ref: '#/components/parameters/DeliveryId'}
+    put: {responses: {'200': {description: Marked read}}}
+  /api/v1/me/notifications/{delivery_id}/unread:
+    parameters:
+      - {$ref: '#/components/parameters/DeliveryId'}
+    put: {responses: {'200': {description: Marked unread}}}
+  /api/v1/me/notifications/read-all:
+    put: {responses: {'200': {description: All recipient notifications read}}}
+  /api/v1/me/notification-preferences:
+    get: {responses: {'200': {description: Preferences}}}
+    put: {responses: {'200': {description: Preferences updated}, '422': {description: Security category cannot be disabled}}}
+components:
+  parameters:
+    DeliveryId:
+      in: path
+      name: delivery_id
+      required: true
+      schema:
+        type: string
+        minLength: 1

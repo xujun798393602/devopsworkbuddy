@@ -1,0 +1,22 @@
+{
+  "vhosts": [{"name": "platform"}],
+  "exchanges": [
+    {"name": "platform.domain.v1", "vhost": "platform", "type": "topic", "durable": true, "auto_delete": false, "arguments": {}},
+    {"name": "platform.dlx.v1", "vhost": "platform", "type": "topic", "durable": true, "auto_delete": false, "arguments": {}}
+  ],
+  "queues": [
+    {"name": "audit.events.v1", "vhost": "platform", "durable": true, "auto_delete": false, "arguments": {"x-queue-type": "quorum", "x-dead-letter-exchange": "platform.dlx.v1"}},
+    {"name": "notification.events.v1", "vhost": "platform", "durable": true, "auto_delete": false, "arguments": {"x-queue-type": "quorum", "x-dead-letter-exchange": "platform.dlx.v1"}},
+    {"name": "tp.trace-projection.v1", "vhost": "platform", "durable": true, "auto_delete": false, "arguments": {"x-queue-type": "quorum", "x-dead-letter-exchange": "platform.dlx.v1"}},
+    {"name": "requirement.events.dlq.v1", "vhost": "platform", "durable": true, "auto_delete": false, "arguments": {"x-queue-type": "quorum"}},
+    {"name": "tp.events.dlq.v1", "vhost": "platform", "durable": true, "auto_delete": false, "arguments": {"x-queue-type": "quorum"}},
+    {"name": "td.events.dlq.v1", "vhost": "platform", "durable": true, "auto_delete": false, "arguments": {"x-queue-type": "quorum"}}
+  ],
+  "bindings": [
+    {"source": "platform.domain.v1", "vhost": "platform", "destination": "audit.events.v1", "destination_type": "queue", "routing_key": "#", "arguments": {}},
+    {"source": "platform.domain.v1", "vhost": "platform", "destination": "notification.events.v1", "destination_type": "queue", "routing_key": "#", "arguments": {}},
+    {"source": "platform.domain.v1", "vhost": "platform", "destination": "tp.trace-projection.v1", "destination_type": "queue", "routing_key": "requirement.#", "arguments": {}},
+    {"source": "platform.domain.v1", "vhost": "platform", "destination": "tp.trace-projection.v1", "destination_type": "queue", "routing_key": "tp.#", "arguments": {}},
+    {"source": "platform.domain.v1", "vhost": "platform", "destination": "tp.trace-projection.v1", "destination_type": "queue", "routing_key": "td.#", "arguments": {}}
+  ]
+}

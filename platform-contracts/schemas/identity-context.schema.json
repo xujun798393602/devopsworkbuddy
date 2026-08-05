@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://devops.company.internal/schemas/identity-context.schema.json",
+  "title": "Identity and JWT context",
+  "type": "object",
+  "required": ["sub", "sid", "iss", "aud", "iat", "nbf", "exp", "jti", "auth_method", "platform_permissions", "break_glass"],
+  "properties": {
+    "sub": {"type": "string", "minLength": 1}, "sid": {"type": "string", "minLength": 1}, "iss": {"type": "string", "minLength": 1},
+    "aud": {"oneOf": [{"type": "string"}, {"type": "array", "items": {"type": "string"}, "minItems": 1}]},
+    "iat": {"type": "integer"}, "nbf": {"type": "integer"}, "exp": {"type": "integer"}, "jti": {"type": "string", "minLength": 1},
+    "auth_method": {"enum": ["oidc", "local_dev", "break_glass", "service"]},
+    "platform_permissions": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}, "break_glass": {"type": "boolean"}
+  },
+  "$defs": {"actor": {"type": "object", "required": ["type", "id", "break_glass"], "properties": {"type": {"enum": ["user", "service", "system"]}, "id": {"type": "string", "minLength": 1}, "break_glass": {"type": "boolean"}}, "additionalProperties": false}},
+  "additionalProperties": true
+}

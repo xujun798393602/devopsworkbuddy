@@ -1,0 +1,41 @@
+openapi: 3.1.0
+info: {title: Test Management Service API, version: 1.0.0}
+paths:
+  /health: {get: {operationId: tpHealth, responses: {'200': {description: Healthy}}}}
+  /ready: {get: {operationId: tpReady, responses: {'200': {description: Ready}, '503': {$ref: common.yaml#/components/responses/Problem}}}}
+  /api/v1/projects/{project_id}/test-folders: {$ref: '#/components/pathItems/Collection'}
+  /api/v1/projects/{project_id}/test-cases: {$ref: '#/components/pathItems/Collection'}
+  /api/v1/projects/{project_id}/test-design-sessions: {$ref: '#/components/pathItems/Collection'}
+  /api/v1/projects/{project_id}/test-environments: {$ref: '#/components/pathItems/Collection'}
+  /api/v1/projects/{project_id}/test-plans: {$ref: '#/components/pathItems/Collection'}
+  /api/v1/projects/{project_id}/test-reports: {$ref: '#/components/pathItems/Collection'}
+  /api/v1/projects/{project_id}/automation-assets: {$ref: '#/components/pathItems/Collection'}
+  /api/v1/projects/{project_id}/automation-suites: {$ref: '#/components/pathItems/Collection'}
+  /api/v1/projects/{project_id}/automation-tasks: {$ref: '#/components/pathItems/Collection'}
+  /api/v1/projects/{project_id}/automation-result-ingestions: {$ref: '#/components/pathItems/WriteOnly'}
+  /api/v1/projects/{project_id}/test-cases/{resource_id}/versions: {$ref: '#/components/pathItems/Collection'}
+  /api/v1/projects/{project_id}/test-design-sessions/{resource_id}/stage-runs: {$ref: '#/components/pathItems/WriteOnlyVersioned'}
+  /api/v1/projects/{project_id}/test-design-sessions/{resource_id}/imports: {$ref: '#/components/pathItems/WriteOnlyVersioned'}
+  /api/v1/projects/{project_id}/test-plans/{resource_id}/transitions: {$ref: '#/components/pathItems/WriteOnlyVersioned'}
+  /api/v1/projects/{project_id}/test-plans/{resource_id}/executions: {$ref: '#/components/pathItems/Collection'}
+  /api/v1/projects/{project_id}/traceability:
+    get: {operationId: queryTraceability, parameters: [{$ref: '#/components/parameters/ProjectId'}, {name: root_type, in: query, required: true, schema: {type: string}}, {name: root_id, in: query, required: true, schema: {type: string}}, {name: direction, in: query, schema: {enum: [forward, reverse, both], default: both}}, {name: depth, in: query, schema: {type: integer, minimum: 1, maximum: 8, default: 4}}], responses: {'200': {description: Traceability graph}}}
+  /api/v1/projects/{project_id}/traceability/completeness:
+    get: {operationId: traceabilityCompleteness, parameters: [{$ref: '#/components/parameters/ProjectId'}, {name: release_version_id, in: query, required: true, schema: {type: string}}], responses: {'200': {description: Completeness rules}}}
+  /internal/api/v1/references/check: {$ref: '#/components/pathItems/WriteOnly'}
+  /internal/api/v1/automation-results: {$ref: '#/components/pathItems/WriteOnly'}
+components:
+  parameters:
+    ProjectId: {name: project_id, in: path, required: true, schema: {type: string}}
+    ResourceId: {name: resource_id, in: path, required: true, schema: {type: string, format: uuid}}
+    IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1, maxLength: 255}}
+    IfMatch: {name: If-Match, in: header, required: true, schema: {type: string}}
+  requestBodies: {Json: {required: true, content: {application/json: {schema: {type: object}}}}}
+  pathItems:
+    Collection:
+      get: {parameters: [{$ref: '#/components/parameters/ProjectId'}], responses: {'200': {description: Collection}}}
+      post: {parameters: [{$ref: '#/components/parameters/ProjectId'}, {$ref: '#/components/parameters/IdempotencyKey'}], requestBody: {$ref: '#/components/requestBodies/Json'}, responses: {'201': {description: Created}, '409': {$ref: common.yaml#/components/responses/Problem}}}
+    WriteOnly:
+      post: {parameters: [{$ref: '#/components/parameters/IdempotencyKey'}], requestBody: {$ref: '#/components/requestBodies/Json'}, responses: {'200': {description: Accepted}, '409': {$ref: common.yaml#/components/responses/Problem}}}
+    WriteOnlyVersioned:
+      post: {parameters: [{$ref: '#/components/parameters/ProjectId'}, {$ref: '#/components/parameters/ResourceId'}, {$ref: '#/components/parameters/IdempotencyKey'}, {$ref: '#/components/parameters/IfMatch'}], requestBody: {$ref: '#/components/requestBodies/Json'}, responses: {'200': {description: Applied}, '409': {$ref: common.yaml#/components/responses/Problem}, '412': {$ref: common.yaml#/components/responses/Problem}}}

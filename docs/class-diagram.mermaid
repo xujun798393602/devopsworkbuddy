@@ -1,0 +1,112 @@
+classDiagram
+class Project {
+  +str id
+  +str business_no
+  +str owner_id
+  +str status
+  +int version
+  +__init__(...)
+  +archive(expected_version)
+}
+class ProjectMembership {
+  +str id
+  +str project_id
+  +str user_id
+  +Role role
+  +str status
+  +int version
+  +__init__(...)
+  +change_role(role, expected_version)
+  +remove(actor_id, expected_version)
+}
+class ReleaseVersion {
+  +str id
+  +str project_id
+  +str business_no
+  +str status
+  +int version
+  +__init__(...)
+  +update(fields, expected_version)
+  +transition(target, force, reason)
+}
+class Iteration {
+  +str id
+  +str project_id
+  +date start_date
+  +date end_date
+  +str status
+  +int version
+  +__init__(...)
+  +update(fields, expected_version)
+  +transition(target, force, reason)
+}
+class Task {
+  +str id
+  +str project_id
+  +str status
+  +str assignee_id
+  +int estimated_minutes
+  +int version
+  +__init__(...)
+  +update(fields, expected_version)
+  +transition(target, expected_version, now)
+}
+class Worklog {
+  +str id
+  +str project_id
+  +str task_id
+  +str user_id
+  +date work_date
+  +int minutes_delta
+  +str corrects_worklog_id
+  +__init__(...)
+}
+class AuthorizationPolicy {
+  +__init__()
+  +authorize(role, action, task_context) None
+  +can_view_worklog_detail(role) bool
+}
+class WorkflowV1 {
+  +__init__()
+  +allowed_targets(status, role) set
+  +transition(task, target, role, now) Task
+}
+class CollaborationService {
+  +__init__(uow_factory, clock)
+  +add_member(project_id, command, context, key)
+  +transfer_owner(project_id, command, context, key)
+  +transition_version(project_id, id, command, context, key)
+  +transition_iteration(project_id, id, command, context, key)
+}
+class TaskService {
+  +__init__(uow_factory, policy, workflow, clock)
+  +create_task(project_id, command, context, key) Task
+  +update_task(project_id, id, command, expected, context, key) Task
+  +transition_task(project_id, id, command, expected, context, key) Task
+  +record_worklog(project_id, task_id, command, context, key) Worklog
+  +correct_worklog(project_id, task_id, id, command, context, key) Worklog
+}
+class UnitOfWork {
+  +projects ProjectRepository
+  +collaboration CollaborationRepository
+  +tasks TaskRepository
+  +idempotency IdempotencyRepository
+  +audit AuditRepository
+  +outbox OutboxRepository
+  +__enter__()
+  +commit()
+  +__exit__()
+}
+Project "1" *-- "many" ProjectMembership : contains
+Project "1" *-- "many" ReleaseVersion : scopes
+Project "1" *-- "many" Iteration : scopes
+Project "1" *-- "many" Task : scopes
+Task "many" --> "0..1" ReleaseVersion : plans
+Task "many" --> "0..1" Iteration : plans
+Task "1" *-- "many" Worklog : immutable entries
+Worklog "0..many" --> "0..1" Worklog : corrects
+CollaborationService --> AuthorizationPolicy
+TaskService --> AuthorizationPolicy
+TaskService --> WorkflowV1
+CollaborationService --> UnitOfWork
+TaskService --> UnitOfWork

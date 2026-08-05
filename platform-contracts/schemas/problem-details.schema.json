@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://devops.company.internal/schemas/problem-details.schema.json",
+  "title": "Problem details",
+  "type": "object",
+  "required": ["type", "title", "status", "detail", "error_code", "trace_id"],
+  "properties": {
+    "type": {"type": "string", "format": "uri-reference"},
+    "title": {"type": "string", "minLength": 1},
+    "status": {"type": "integer", "minimum": 400, "maximum": 599},
+    "detail": {"type": "string"},
+    "error_code": {"type": "string", "pattern": "^[A-Z][A-Z0-9_]+$"},
+    "trace_id": {"type": "string", "minLength": 1},
+    "errors": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["field", "message"],
+        "properties": {
+          "field": {"type": "string"},
+          "message": {"type": "string"},
+          "code": {"type": "string"}
+        },
+        "additionalProperties": false
+      }
+    }
+  },
+  "additionalProperties": true
+}

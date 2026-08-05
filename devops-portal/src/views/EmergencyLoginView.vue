@@ -1,0 +1,1 @@
+<template><v-app><v-main id="main"><v-container><v-alert type="error" title="Emergency access">Requires TOTP, approved CIDR, reason and ticket. Development UI does not bypass these controls.</v-alert></v-container></v-main></v-app></template>

@@ -1,0 +1,52 @@
+# ===== 安全红线：密钥与敏感数据（禁止入仓库） =====
+.workbuddy/
+**/secrets/
+*.key
+*.pem
+.env
+.env.*
+!.env.example
+**/*.env
+!**/.env.example
+
+# ===== 依赖与构建产物 =====
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+*.whl
+wheelhouse/
+**/wheelhouse/
+*.egg-info/
+**/__pycache__/
+*.py[cod]
+.pytest_cache/
+**/.pytest_cache/
+.ruff_cache/
+**/.ruff_cache/
+*.db
+**/*.db
+*.sqlite3
+
+# ===== 临时产物与诊断文件 =====
+*.log
+**/*.log
+*.b64
+**/*.b64
+*.tar
+*.tmp
+pytest-cache-files-*/
+artifacts/
+outputs/
+*.txt
+**/*.txt
+!**/*.lock
+!**/requirements*.txt
+!**/constraints*.txt
+
+# ===== 环境特定 =====
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+.git.bak-*/

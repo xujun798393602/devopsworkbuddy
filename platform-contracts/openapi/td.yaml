@@ -1,0 +1,24 @@
+openapi: 3.1.0
+info: {title: Defect Service API, version: 1.0.0}
+paths:
+  /health: {get: {operationId: defectHealth, responses: {'200': {description: Healthy}}}}
+  /ready: {get: {operationId: defectReady, responses: {'200': {description: Ready}, '503': {$ref: common.yaml#/components/responses/Problem}}}}
+  /api/v1/projects/{project_id}/defects:
+    get: {operationId: listDefects, parameters: [{$ref: '#/components/parameters/ProjectId'}, {$ref: '#/components/parameters/Cursor'}], responses: {'200': {description: Defects}}}
+    post: {operationId: createDefect, parameters: [{$ref: '#/components/parameters/ProjectId'}, {$ref: '#/components/parameters/IdempotencyKey'}], requestBody: {$ref: '#/components/requestBodies/Json'}, responses: {'201': {description: Created}, '422': {$ref: common.yaml#/components/responses/Problem}}}
+  /api/v1/projects/{project_id}/defects/{defect_id}:
+    get: {operationId: getDefect, parameters: [{$ref: '#/components/parameters/ProjectId'}, {$ref: '#/components/parameters/DefectId'}], responses: {'200': {description: Defect}, '404': {$ref: common.yaml#/components/responses/Problem}}}
+    patch: {operationId: patchDefect, parameters: [{$ref: '#/components/parameters/ProjectId'}, {$ref: '#/components/parameters/DefectId'}, {$ref: '#/components/parameters/IdempotencyKey'}, {$ref: '#/components/parameters/IfMatch'}], requestBody: {$ref: '#/components/requestBodies/Json'}, responses: {'200': {description: Updated}, '412': {$ref: common.yaml#/components/responses/Problem}}}
+  /api/v1/projects/{project_id}/defects/{defect_id}/transitions:
+    post: {operationId: transitionDefect, parameters: [{$ref: '#/components/parameters/ProjectId'}, {$ref: '#/components/parameters/DefectId'}, {$ref: '#/components/parameters/IdempotencyKey'}, {$ref: '#/components/parameters/IfMatch'}], requestBody: {$ref: '#/components/requestBodies/Json'}, responses: {'200': {description: Transitioned}, '409': {$ref: common.yaml#/components/responses/Problem}, '412': {$ref: common.yaml#/components/responses/Problem}}}
+  /api/v1/projects/{project_id}/defects/{defect_id}/history: {get: {operationId: getDefectHistory, parameters: [{$ref: '#/components/parameters/ProjectId'}, {$ref: '#/components/parameters/DefectId'}], responses: {'200': {description: History}}}}
+  /api/v1/projects/{project_id}/defects/{defect_id}/traceability-links: {get: {operationId: getDefectLinks, parameters: [{$ref: '#/components/parameters/ProjectId'}, {$ref: '#/components/parameters/DefectId'}], responses: {'200': {description: Links}}}}
+  /internal/api/v1/references/check: {post: {operationId: checkDefectReferences, parameters: [{$ref: '#/components/parameters/IdempotencyKey'}], requestBody: {$ref: '#/components/requestBodies/Json'}, responses: {'200': {description: Results}}}}
+components:
+  parameters:
+    ProjectId: {name: project_id, in: path, required: true, schema: {type: string}}
+    DefectId: {name: defect_id, in: path, required: true, schema: {type: string, format: uuid}}
+    Cursor: {name: cursor, in: query, schema: {type: string}}
+    IdempotencyKey: {name: Idempotency-Key, in: header, required: true, schema: {type: string, minLength: 1}}
+    IfMatch: {name: If-Match, in: header, required: true, schema: {type: string}}
+  requestBodies: {Json: {required: true, content: {application/json: {schema: {type: object}}}}}

@@ -1,0 +1,17 @@
+openapi: 3.1.0
+info: {title: Audit Service, version: 1.0.0}
+paths:
+  /internal/api/v1/audit-records:
+    post: {responses: {'201': {description: Idempotently appended}, '403': {description: Caller lacks audit ingest scope}, '422': {description: 'Schema, size, or sensitive field rejection'}}}
+  /api/v1/audit-records:
+    get:
+      parameters:
+        - {in: query, name: from, required: true, schema: {type: string, format: date-time}}
+        - {in: query, name: to, required: true, schema: {type: string, format: date-time}}
+        - {in: query, name: cursor, schema: {type: string}}
+        - {in: query, name: actor_id, schema: {type: string}}
+        - {in: query, name: project_id, schema: {type: string}}
+        - {in: query, name: resource_type, schema: {type: string}}
+        - {in: query, name: action, schema: {type: string}}
+        - {in: query, name: result, schema: {type: string}}
+      responses: {'200': {description: Stable cursor page}, '403': {description: Audit permission required}, '422': {description: Time range required}}

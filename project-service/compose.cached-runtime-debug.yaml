@@ -1,0 +1,34 @@
+# Explicit Python 3.12.12 remote/integration debug override.
+# Use together with compose.debug.yaml; production defaults remain Python 3.13.
+services:
+  db:
+    container_name: wkDEVOPS-project-service-postgres-py312-debug
+  migrate:
+    image: ${APP_IMAGE:-wkdevops/project-service:dev-py312-debug}
+    container_name: wkDEVOPS-project-service-migrate-py312-debug
+    build:
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12.12-slim}
+        PYTHON_IMPLEMENTATION: cp312
+        PYTHON_VERSION_EXPECTED: 3.12.12
+        WHEELHOUSE_DIR: wheelhouse/linux-x86_64-cp312
+        LOCK_FILE: constraints/cp312-linux-x86_64.txt
+    environment:
+      PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12.12-slim}
+      WHEELHOUSE_ID: ${WHEELHOUSE_ID:-cp312-linux-x86_64-debug}
+  api:
+    image: ${APP_IMAGE:-wkdevops/project-service:dev-py312-debug}
+    container_name: wkDEVOPS-project-service-api-py312-debug
+    build:
+      args:
+        PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12.12-slim}
+        PYTHON_IMPLEMENTATION: cp312
+        PYTHON_VERSION_EXPECTED: 3.12.12
+        WHEELHOUSE_DIR: wheelhouse/linux-x86_64-cp312
+        LOCK_FILE: constraints/cp312-linux-x86_64.txt
+    environment:
+      PYTHON_IMAGE: ${PYTHON_IMAGE:-python:3.12.12-slim}
+      WHEELHOUSE_ID: ${WHEELHOUSE_ID:-cp312-linux-x86_64-debug}
+volumes:
+  project_service_data:
+    name: wkDEVOPS-project-service-data-py312-debug

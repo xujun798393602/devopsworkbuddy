@@ -1,0 +1,31 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://devops.company.internal/schemas/requirement-events.v1.schema.json",
+  "title": "Requirement domain event data v1",
+  "oneOf": [
+    {"$ref": "#/$defs/created"}, {"$ref": "#/$defs/review_submitted"},
+    {"$ref": "#/$defs/approved"}, {"$ref": "#/$defs/baselined"},
+    {"$ref": "#/$defs/baseline_changed"}, {"$ref": "#/$defs/change_applied"},
+    {"$ref": "#/$defs/completed"}
+  ],
+  "$defs": {
+    "base": {
+      "type": "object",
+      "required": ["event_type", "requirement_id", "business_no", "status", "version"],
+      "properties": {
+        "event_type": {"type": "string"}, "requirement_id": {"type": "string", "format": "uuid"},
+        "business_no": {"type": "string", "pattern": "^REQ-"}, "status": {"type": "string"},
+        "version": {"type": "integer", "minimum": 1}, "revision_no": {"type": "integer", "minimum": 1},
+        "revision_hash": {"type": "string", "pattern": "^[a-f0-9]{64}$"},
+        "baseline_id": {"type": "string", "format": "uuid"}, "recipient_ids": {"type": "array", "maxItems": 200, "items": {"type": "string"}}
+      }, "additionalProperties": false
+    },
+    "created": {"$ref": "#/$defs/base", "properties": {"event_type": {"const": "Requirement.Created"}}},
+    "review_submitted": {"$ref": "#/$defs/base", "properties": {"event_type": {"const": "Requirement.ReviewSubmitted"}}},
+    "approved": {"$ref": "#/$defs/base", "properties": {"event_type": {"const": "Requirement.Approved"}}},
+    "baselined": {"$ref": "#/$defs/base", "properties": {"event_type": {"const": "Requirement.Baselined"}}},
+    "baseline_changed": {"$ref": "#/$defs/base", "properties": {"event_type": {"const": "Requirement.BaselineChanged"}}},
+    "change_applied": {"$ref": "#/$defs/base", "properties": {"event_type": {"const": "Requirement.ChangeApplied"}}},
+    "completed": {"$ref": "#/$defs/base", "properties": {"event_type": {"const": "Requirement.Completed"}}}
+  }
+}
