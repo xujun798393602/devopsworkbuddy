@@ -1,10 +1,18 @@
 from flask import Blueprint, current_app, g, jsonify, request
 
+from project_service.projects.service import PORTAL_PROJECT_LIMIT_DEFAULT, PORTAL_PROJECT_LIMIT_MAX
 from project_service.shared.errors import ValidationError
-from project_service.shared.http import require_idempotency_key
+from project_service.shared.http import (
+    parse_portal_limit,
+    portal_cross_project,
+    require_idempotency_key,
+)
 from project_service.shared.idempotency import StoredResponse
 
 projects_blueprint = Blueprint("projects", __name__, url_prefix="/api/v1/projects")
+# Portal aggregation endpoints live under a prefix the gateway proxy cannot reach,
+# so only the portal aggregator (which calls upstreams directly) can consume them.
+portal_blueprint = Blueprint("projects_portal", __name__, url_prefix="/api/v1/portal")
 
 
 def _service():
@@ -50,3 +58,17 @@ def get_project(project_id):
     response = jsonify({"data": item.to_dict(), "meta": {"trace_id": g.request_context.trace_id}})
     response.headers["ETag"] = f'"{item.version}"'
     return response
+
+
+@portal_blueprint.get("/projects-overview")
+def portal_projects_overview():
+    """Return the batched project block plus the project ids for downstream fan-out."""
+    limit = parse_portal_limit(
+        request, "limit", PORTAL_PROJECT_LIMIT_DEFAULT, PORTAL_PROJECT_LIMIT_MAX
+    )
+    data = _service().portal_overview(
+        g.request_context.actor_id,
+        cross_project=portal_cross_project(request),
+        limit=limit,
+    )
+    return jsonify({"data": data, "meta": {"trace_id": g.request_context.trace_id}})

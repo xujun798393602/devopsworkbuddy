@@ -32,6 +32,118 @@ from td_service.persistence import (
 IdempotencyValue = tuple[str, dict[str, Any], int]
 
 
+@dataclass(frozen=True, slots=True)
+class PortalDefectSnapshot:
+    """Read-only defect projection consumed by the portal dashboard aggregation."""
+
+    id: UUID
+    project_id: UUID
+    business_no: str
+    title: str
+    severity: str
+    priority: str
+    status: str
+    assignee_id: UUID | None
+    response_due_at: datetime | None
+    resolution_due_at: datetime | None
+    first_responded_at: datetime | None
+    resolved_at: datetime | None
+    response_breached: bool
+    resolution_breached: bool
+
+    @classmethod
+    def from_defect(cls, defect: Defect) -> PortalDefectSnapshot:
+        """Project an in-memory aggregate without mutating its SLA snapshot."""
+        sla = defect.sla
+        return cls(
+            defect.id,
+            defect.project_id,
+            defect.business_no,
+            defect.title,
+            defect.severity,
+            defect.priority,
+            defect.status.value,
+            defect.assignee_id,
+            sla.response_due_at if sla is not None else None,
+            sla.resolution_due_at if sla is not None else None,
+            sla.first_responded_at if sla is not None else None,
+            sla.resolved_at if sla is not None else None,
+            bool(sla.response_breached) if sla is not None else False,
+            bool(sla.resolution_breached) if sla is not None else False,
+        )
+
+
+@dataclass(slots=True)
+class MemoryPortalRepository:
+    """Portal projections computed from the explicit in-memory adapter."""
+
+    uow: MemoryUnitOfWork
+
+    def defects(
+        self,
+        project_ids: tuple[UUID, ...] | list[UUID],
+        cross_project: bool = False,
+    ) -> list[PortalDefectSnapshot]:
+        """Return deterministic defect snapshots inside the effective scope."""
+        scope: set[UUID] | None = None if cross_project else set(project_ids)
+        snapshots = [
+            PortalDefectSnapshot.from_defect(defect)
+            for (project_id, _), defect in self.uow.defects.items()
+            if scope is None or project_id in scope
+        ]
+        snapshots.sort(key=lambda item: (str(item.project_id), item.business_no, str(item.id)))
+        return snapshots
+
+
+class SqlAlchemyPortalRepository:
+    """Batched read-only SQL projections for the portal dashboard.
+
+    One statement covers the whole project set so a dashboard fan-out never
+    degenerates into an N+1 query pattern, and the eager aggregate hydration of
+    :class:`SqlAlchemyUnitOfWork` is bypassed entirely.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def defects(
+        self,
+        project_ids: tuple[UUID, ...] | list[UUID],
+        cross_project: bool = False,
+    ) -> list[PortalDefectSnapshot]:
+        """Join defect heads with their SLA snapshot in a single statement."""
+        if not cross_project and not project_ids:
+            return []
+        statement = (
+            select(DefectRow, DefectSlaRow)
+            .join(DefectSlaRow, DefectSlaRow.defect_id == DefectRow.id, isouter=True)
+            .order_by(DefectRow.project_id, DefectRow.business_no, DefectRow.id)
+        )
+        if not cross_project:
+            statement = statement.where(DefectRow.project_id.in_(tuple(project_ids)))
+        snapshots: list[PortalDefectSnapshot] = []
+        for row, sla in self.session.execute(statement):
+            snapshots.append(
+                PortalDefectSnapshot(
+                    row.id,
+                    row.project_id,
+                    row.business_no,
+                    row.title,
+                    row.severity,
+                    row.priority,
+                    row.status,
+                    row.assignee_id,
+                    sla.response_due_at if sla is not None else None,
+                    sla.resolution_due_at if sla is not None else None,
+                    sla.first_responded_at if sla is not None else None,
+                    sla.resolved_at if sla is not None else None,
+                    bool(sla.response_breached) if sla is not None else False,
+                    bool(sla.resolution_breached) if sla is not None else False,
+                )
+            )
+        return snapshots
+
+
 @dataclass(slots=True)
 class MemoryUnitOfWork:
     """Project-scoped adapter used by component tests and local development."""
@@ -47,6 +159,17 @@ class MemoryUnitOfWork:
 
     def rollback(self) -> None:
         """Leave the explicit in-memory test adapter unchanged."""
+
+    def list_defects(self, project_id: UUID, offset: int, limit: int) -> list[Defect]:
+        """Return one deterministic page of project defects (cursor-ready).
+
+        Ordered by ``(business_no, id)`` so an opaque offset cursor stays stable
+        across pages; the HTTP adapter requests ``limit + 1`` rows to learn
+        whether another page exists.
+        """
+        values = [item for (scope, _), item in self.defects.items() if scope == project_id]
+        values.sort(key=lambda item: (item.business_no, str(item.id)))
+        return values[offset : offset + limit]
 
     def duplicate_ancestors(self, project_id: UUID, master_id: UUID) -> set[UUID]:
         """Walk the master chain in memory; persistence uses a recursive CTE."""
@@ -406,6 +529,10 @@ class SqlAlchemyRuntime:
     def unit_of_work(self) -> SqlAlchemyUnitOfWork:
         """Create a UoW bound to the current request session."""
         return SqlAlchemyUnitOfWork(self.sessions)
+
+    def portal_repository(self) -> SqlAlchemyPortalRepository:
+        """Create a read-only portal projection bound to the current session."""
+        return SqlAlchemyPortalRepository(self.sessions)
 
     def ready(self) -> None:
         """Raise when the private database cannot answer a trivial query."""

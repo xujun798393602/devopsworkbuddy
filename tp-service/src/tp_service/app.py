@@ -1,6 +1,7 @@
 """Flask API for TP library, design gates and safe XMind imports."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from typing import Any
@@ -16,15 +17,45 @@ from tp_service.domain import DomainError
 from tp_service.execution import ManagedEnvironment, PlanScopeSnapshot
 from tp_service.repository import (
     AllowAllAuthorizer,
+    MemoryPortalRepository,
     MemoryUnitOfWork,
     SqlAlchemyRuntime,
 )
-from tp_service.service import TpService
+from tp_service.service import (
+    PLAN_TRANSITION_ACTIONS,
+    PORTAL_EXECUTION_LIMIT_DEFAULT,
+    PORTAL_EXECUTION_LIMIT_MAX,
+    PortalRepository,
+    TpPortalService,
+    TpService,
+)
 from tp_service.traceability import TraceEndpoint, TraceGraph, TraceProjectionService
 
+PORTAL_CROSS_PROJECT_PERMISSION = "portal:cross-project-view"
 
-def _problem(status: int, code: str, detail: str) -> tuple[Response, int]:
-    response = jsonify(type=f"urn:problem:{code.lower()}", title=code.replace("_", " ").title(), status=status, detail=detail, code=code)
+TEST_CASE_LIST_LIMIT_DEFAULT = 20
+TEST_CASE_LIST_LIMIT_MAX = 100
+TEST_PLAN_LIST_LIMIT_DEFAULT = 20
+TEST_PLAN_LIST_LIMIT_MAX = 100
+
+
+def _problem(status: int, code: str, detail: str, *, trace_id: str | None = None) -> tuple[Response, int]:
+    """Return an RFC 9457 problem aligned with ``common.yaml`` (error_code/trace_id).
+
+    The ``error_code`` mirrors ``code`` for compatibility with requirement/td
+    services; ``trace_id`` is attached when the caller can supply one.
+    """
+    body: dict[str, Any] = {
+        "type": f"urn:problem:{code.lower()}",
+        "title": code.replace("_", " ").title(),
+        "status": status,
+        "detail": detail,
+        "code": code,
+        "error_code": code,
+    }
+    if trace_id is not None:
+        body["trace_id"] = trace_id
+    response = jsonify(body)
     response.content_type = "application/problem+json"
     return response, status
 
@@ -34,6 +65,72 @@ def _actor_id() -> UUID:
         return UUID(request.headers.get("X-Actor-Id", ""))
     except ValueError as error:
         raise DomainError("UNAUTHENTICATED", "A valid actor identity is required", 401) from error
+
+
+def optional_actor_id(raw: str | None) -> UUID | None:
+    """Parse the gateway-injected actor identity without failing a read."""
+    if not raw:
+        return None
+    try:
+        return UUID(raw.strip())
+    except ValueError:
+        return None
+
+
+def platform_permissions(raw: str | None) -> frozenset[str]:
+    """Parse the CSV permission header injected by the API gateway."""
+    return frozenset(item.strip() for item in (raw or "").split(",") if item.strip())
+
+
+def portal_cross_project(headers: Any) -> bool:
+    """Re-validate the cross-project intent inside the domain (defence in depth).
+
+    The gateway is the authoritative decision point, but a domain service must
+    never widen its scope on the strength of ``X-Portal-Cross-Project`` alone.
+    """
+    requested = str(headers.get("X-Portal-Cross-Project", "")).strip().lower() == "true"
+    if not requested:
+        return False
+    return PORTAL_CROSS_PROJECT_PERMISSION in platform_permissions(headers.get("X-Platform-Permissions"))
+
+
+def parse_project_ids(raw: str | None) -> tuple[UUID, ...]:
+    """Parse the ``project_ids`` CSV, dropping malformed and duplicated entries."""
+    values: list[UUID] = []
+    for item in (raw or "").split(","):
+        candidate = item.strip()
+        if not candidate:
+            continue
+        try:
+            values.append(UUID(candidate))
+        except ValueError:
+            continue
+    return tuple(dict.fromkeys(values))
+
+
+def parse_portal_limit(raw: str | None, default: int, maximum: int) -> int:
+    """Parse a bounded portal list limit; out-of-range values raise ``ValueError``."""
+    if raw is None or raw == "":
+        return default
+    limit = int(raw)
+    if not 1 <= limit <= maximum:
+        raise ValueError(f"limit must be between 1 and {maximum}")
+    return limit
+
+
+def _encode_cursor(offset: int) -> str:
+    """Encode an opaque pagination cursor from a row offset (aligned with B1)."""
+    return base64.urlsafe_b64encode(str(offset).encode("ascii")).decode("ascii")
+
+
+def _decode_cursor(raw: str | None) -> int:
+    """Decode an opaque pagination cursor, defaulting to the first page."""
+    if not raw:
+        return 0
+    try:
+        return int(base64.urlsafe_b64decode(raw.encode("ascii")).decode("ascii"))
+    except (ValueError, UnicodeDecodeError):
+        return 0
 
 
 def _write_headers() -> tuple[UUID, str]:
@@ -83,6 +180,50 @@ def _plan(plan: Any) -> dict[str, Any]:
                 "environment_id": str(item.environment_id),
             }
             for item in plan.scope
+        ],
+    }
+
+
+def _case(case: Any) -> dict[str, Any]:
+    """Serialize a test case head (architecture §9.C.1).
+
+    ``current_version_id`` is ``None`` until a version is published; the case
+    carries no ``created_at``/``updated_at`` columns (same as requirement B1),
+    so those keys are intentionally omitted from the payload.
+    """
+    return {
+        "id": str(case.id),
+        "project_id": str(case.project_id),
+        "business_no": case.business_no,
+        "folder_id": str(case.folder_id),
+        "title": case.title,
+        "owner_id": str(case.owner_id),
+        "type": case.type,
+        "priority": case.priority,
+        "status": case.status,
+        "automation_mode": case.automation_mode,
+        "current_version_id": str(case.current_version_id) if case.current_version_id else None,
+        "requirement_refs": [str(item) for item in case.requirement_refs],
+        "version": case.version,
+    }
+
+
+def _version(version: Any) -> dict[str, Any]:
+    """Serialize an immutable test case version."""
+    return {
+        "id": str(version.id),
+        "case_id": str(version.case_id),
+        "version_no": version.version_no,
+        "content_hash": version.content_hash,
+        "source": version.source,
+        "steps": [
+            {
+                "sequence": step.sequence,
+                "action": step.action,
+                "expected": step.expected,
+                "test_data": step.test_data,
+            }
+            for step in version.steps
         ],
     }
 
@@ -177,6 +318,21 @@ def create_app(
             g.tp_service = TpService(current_store(), AllowAllAuthorizer())
         return g.tp_service
 
+    def current_portal_repository() -> PortalRepository:
+        """Return a read-only portal projection for the current request.
+
+        In SQL mode this deliberately avoids ``current_store()`` because the TP
+        unit of work eagerly materializes every aggregate, which a dashboard
+        summary must never pay for.
+        """
+        if memory_store is not None:
+            return MemoryPortalRepository(memory_store)
+        if runtime is None:
+            raise RuntimeError("TP SQL runtime is not configured")
+        if "tp_portal_repository" not in g:
+            g.tp_portal_repository = runtime.portal_repository()
+        return g.tp_portal_repository
+
     store = LocalProxy(current_store)
     service = LocalProxy(current_service)
     traces = trace_projection or TraceProjectionService()
@@ -192,6 +348,7 @@ def create_app(
             return
         request_store = g.pop("tp_uow", None)
         g.pop("tp_service", None)
+        g.pop("tp_portal_repository", None)
         if error is not None and request_store is not None:
             request_store.rollback()
         runtime.remove()
@@ -274,6 +431,29 @@ def create_app(
         return {
             "status": "ready",
             "dependencies": {"database": "ok", "ai": "deterministic-mock"},
+        }
+
+    @app.get("/api/v1/portal/tp-summary")
+    def portal_tp_summary() -> dict[str, Any]:
+        """Return batched TP statistics for the platform dashboard.
+
+        The ``/api/v1/portal/*`` prefix is not routable through the browser-facing
+        gateway proxy, so this endpoint is only reachable server to server.
+        """
+        execution_limit = parse_portal_limit(
+            request.args.get("execution_limit"),
+            PORTAL_EXECUTION_LIMIT_DEFAULT,
+            PORTAL_EXECUTION_LIMIT_MAX,
+        )
+        data = TpPortalService(current_portal_repository()).summary(
+            parse_project_ids(request.args.get("project_ids")),
+            optional_actor_id(request.headers.get("X-Actor-Id")),
+            cross_project=portal_cross_project(request.headers),
+            execution_limit=execution_limit,
+        )
+        return {
+            "data": data,
+            "meta": {"trace_id": request.headers.get("X-Trace-Id", "local")},
         }
 
     @app.get("/api/v1/projects/<uuid:project_id>/test-folders")
@@ -499,6 +679,181 @@ def create_app(
             actor_id, project_id, key, fingerprint, _plan(plan), 200
         )
         response.headers["ETag"] = f'"{plan.version}"'
+        return response, status
+
+    @app.get("/api/v1/projects/<uuid:project_id>/test-cases")
+    def list_cases_route(project_id: UUID) -> dict[str, Any]:
+        """List test cases with opaque cursor pagination (architecture §9.C.1)."""
+        limit = parse_portal_limit(
+            request.args.get("limit"),
+            TEST_CASE_LIST_LIMIT_DEFAULT,
+            TEST_CASE_LIST_LIMIT_MAX,
+        )
+        offset = _decode_cursor(request.args.get("cursor"))
+        all_cases = service.list_cases(project_id)
+        page = all_cases[offset : offset + limit]
+        has_more = offset + limit < len(all_cases)
+        next_cursor = _encode_cursor(offset + limit) if has_more else None
+        return {
+            "data": {"items": [_case(item) for item in page]},
+            "meta": {"next_cursor": next_cursor, "has_more": has_more},
+        }
+
+    @app.post("/api/v1/projects/<uuid:project_id>/test-cases")
+    def create_case_route(project_id: UUID) -> tuple[Response, int]:
+        actor_id, key = _write_headers()
+        payload = request.get_json(silent=True) or {}
+        fingerprint = request_fingerprint("test-case:create", payload)
+        prior = replay_response(actor_id, project_id, key, fingerprint)
+        if prior is not None:
+            return prior
+        case = service.create_case(
+            actor_id,
+            project_id,
+            str(payload.get("business_no", "")),
+            UUID(str(payload["folder_id"])) if payload.get("folder_id") else None,
+            str(payload.get("title", "")),
+            UUID(str(payload.get("owner_id", ""))),
+            str(payload.get("type", "functional")),
+            str(payload.get("priority", "p2")),
+            str(payload.get("automation_mode", "manual")),
+            tuple(UUID(str(item)) for item in payload.get("requirement_refs", [])),
+        )
+        response, status = commit_response(
+            actor_id, project_id, key, fingerprint, _case(case), 201
+        )
+        response.headers["ETag"] = f'"{case.version}"'
+        return response, status
+
+    @app.get("/api/v1/projects/<uuid:project_id>/test-cases/<uuid:resource_id>")
+    def get_case_route(project_id: UUID, resource_id: UUID) -> tuple[Response, int]:
+        case = service.get_case(project_id, resource_id)
+        if case is None:
+            raise DomainError("RESOURCE_NOT_FOUND", "Test case is not visible", 404)
+        response = jsonify({"data": _case(case), "meta": {"trace_id": "local"}})
+        response.headers["ETag"] = f'"{case.version}"'
+        return response, 200
+
+    @app.patch("/api/v1/projects/<uuid:project_id>/test-cases/<uuid:resource_id>")
+    def patch_case_route(project_id: UUID, resource_id: UUID) -> tuple[Response, int]:
+        actor_id, key = _write_headers()
+        payload = request.get_json(silent=True) or {}
+        fingerprint = request_fingerprint("test-case:patch", payload)
+        prior = replay_response(actor_id, project_id, key, fingerprint)
+        if prior is not None:
+            return prior
+        case = service.get_case(project_id, resource_id)
+        if case is None:
+            raise DomainError("RESOURCE_NOT_FOUND", "Test case is not visible", 404)
+        if request.headers.get("If-Match") != f'"{case.version}"':
+            raise DomainError("PRECONDITION_FAILED", "If-Match does not match the current ETag", 412)
+        updated = service.patch_case(actor_id, project_id, resource_id, payload)
+        response, status = commit_response(
+            actor_id, project_id, key, fingerprint, _case(updated), 200
+        )
+        response.headers["ETag"] = f'"{updated.version}"'
+        return response, status
+
+    @app.post("/api/v1/projects/<uuid:project_id>/test-cases/<uuid:resource_id>/versions")
+    def create_case_version_route(project_id: UUID, resource_id: UUID) -> tuple[Response, int]:
+        """Create an immutable version and publish it (architecture §9.C.2)."""
+        actor_id, key = _write_headers()
+        payload = request.get_json(silent=True) or {}
+        fingerprint = request_fingerprint("test-case:version:create", payload)
+        prior = replay_response(actor_id, project_id, key, fingerprint)
+        if prior is not None:
+            return prior
+        case = service.get_case(project_id, resource_id)
+        if case is None:
+            raise DomainError("RESOURCE_NOT_FOUND", "Test case is not visible", 404)
+        version = service.create_case_version(
+            actor_id,
+            project_id,
+            resource_id,
+            list(payload.get("steps", [])),
+            str(payload.get("source", "manual")),
+        )
+        response, status = commit_response(
+            actor_id, project_id, key, fingerprint, _version(version), 201
+        )
+        response.headers["ETag"] = f'"{case.version}"'
+        return response, status
+
+    @app.get("/api/v1/projects/<uuid:project_id>/test-cases/<uuid:resource_id>/versions")
+    def list_case_versions_route(project_id: UUID, resource_id: UUID) -> dict[str, Any]:
+        case = service.get_case(project_id, resource_id)
+        if case is None:
+            raise DomainError("RESOURCE_NOT_FOUND", "Test case is not visible", 404)
+        versions = service.list_case_versions(resource_id)
+        return {
+            "data": {"items": [_version(item) for item in versions]},
+            "meta": {"trace_id": "local"},
+        }
+
+    @app.get("/api/v1/projects/<uuid:project_id>/test-cases/<uuid:resource_id>/versions/<uuid:version_id>")
+    def get_case_version_route(project_id: UUID, resource_id: UUID, version_id: UUID) -> tuple[Response, int]:
+        version = service.get_case_version(version_id)
+        if version is None:
+            raise DomainError("RESOURCE_NOT_FOUND", "Test case version is not visible", 404)
+        return jsonify({"data": _version(version), "meta": {"trace_id": "local"}}), 200
+
+    @app.get("/api/v1/projects/<uuid:project_id>/test-plans")
+    def list_plans_route(project_id: UUID) -> dict[str, Any]:
+        """List test plans with opaque cursor pagination (architecture §9.C.3)."""
+        limit = parse_portal_limit(
+            request.args.get("limit"),
+            TEST_PLAN_LIST_LIMIT_DEFAULT,
+            TEST_PLAN_LIST_LIMIT_MAX,
+        )
+        offset = _decode_cursor(request.args.get("cursor"))
+        all_plans = service.list_plans(project_id)
+        page = all_plans[offset : offset + limit]
+        has_more = offset + limit < len(all_plans)
+        next_cursor = _encode_cursor(offset + limit) if has_more else None
+        return {
+            "data": {"items": [_plan(item) for item in page]},
+            "meta": {"next_cursor": next_cursor, "has_more": has_more},
+        }
+
+    @app.get("/api/v1/projects/<uuid:project_id>/test-plans/<uuid:resource_id>")
+    def get_plan_route(project_id: UUID, resource_id: UUID) -> tuple[Response, int]:
+        plan = service.get_plan(project_id, resource_id)
+        if plan is None:
+            raise DomainError("RESOURCE_NOT_FOUND", "Test plan is not visible", 404)
+        response = jsonify({"data": _plan(plan), "meta": {"trace_id": "local"}})
+        response.headers["ETag"] = f'"{plan.version}"'
+        return response, 200
+
+    @app.post("/api/v1/projects/<uuid:project_id>/test-plans/<uuid:plan_id>/transitions")
+    def transition_plan_route(project_id: UUID, plan_id: UUID) -> tuple[Response, int]:
+        """Apply one generic lifecycle action to a plan (architecture §9.C.3)."""
+        actor_id, key = _write_headers()
+        payload = request.get_json(silent=True) or {}
+        fingerprint = request_fingerprint("test-plan:transition", payload)
+        prior = replay_response(actor_id, project_id, key, fingerprint)
+        if prior is not None:
+            return prior
+        plan = service.get_plan(project_id, plan_id)
+        if plan is None:
+            raise DomainError("RESOURCE_NOT_FOUND", "Test plan is not visible", 404)
+        if request.headers.get("If-Match") != f'"{plan.version}"':
+            raise DomainError("PRECONDITION_FAILED", "If-Match does not match the current ETag", 412)
+        action = str(payload.get("action", ""))
+        scope = tuple(
+            PlanScopeSnapshot(
+                UUID(str(item["requirement_ref"])),
+                int(item["requirement_revision"]),
+                str(item["requirement_hash"]),
+                UUID(str(item["case_version_ref"])),
+                UUID(str(item["environment_id"])),
+            )
+            for item in payload.get("scope", [])
+        )
+        valid = {UUID(str(value)) for value in payload.get("valid_case_versions", [])}
+        reason = str(payload.get("reason", ""))
+        updated = service.transition_plan(actor_id, project_id, plan_id, action, scope, valid, reason)
+        response, status = commit_response(actor_id, project_id, key, fingerprint, _plan(updated), 200)
+        response.headers["ETag"] = f'"{updated.version}"'
         return response, status
 
     @app.post("/api/v1/projects/<uuid:project_id>/test-executions")

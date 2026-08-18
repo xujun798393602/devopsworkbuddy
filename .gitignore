@@ -43,6 +43,8 @@ outputs/
 !**/*.lock
 !**/requirements*.txt
 !**/constraints*.txt
+.vitest.out
+**/.vitest.out
 
 # ===== 环境特定 =====
 .vscode/

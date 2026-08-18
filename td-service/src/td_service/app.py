@@ -1,6 +1,7 @@
 """Flask HTTP adapter for the defect service."""
 from __future__ import annotations
 
+import base64
 import hashlib
 import json
 from typing import Any, cast
@@ -14,22 +15,111 @@ from td_service.config import Config
 from td_service.domain import DomainError, FixEvidence, VerificationEvidence
 from td_service.repository import (
     AllowAllAuthorizer,
+    MemoryPortalRepository,
     MemoryUnitOfWork,
     SqlAlchemyRuntime,
 )
-from td_service.service import DefectService, UnitOfWork
+from td_service.service import (
+    DEFECT_LIST_LIMIT_DEFAULT,
+    DEFECT_LIST_LIMIT_MAX,
+    PORTAL_DEFECT_LIMIT_DEFAULT,
+    PORTAL_DEFECT_LIMIT_MAX,
+    DefectService,
+    PortalRepository,
+    TdPortalService,
+    UnitOfWork,
+)
+
+PORTAL_CROSS_PROJECT_PERMISSION = "portal:cross-project-view"
 
 
-def _problem(status: int, code: str, detail: str) -> tuple[Response, int]:
-    response = jsonify(
-        type=f"urn:problem:{code.lower()}",
-        title=code.replace("_", " ").title(),
-        status=status,
-        detail=detail,
-        code=code,
+def optional_actor_id(raw: str | None) -> UUID | None:
+    """Parse the gateway-injected actor identity without failing a read."""
+    if not raw:
+        return None
+    try:
+        return UUID(raw.strip())
+    except ValueError:
+        return None
+
+
+def platform_permissions(raw: str | None) -> frozenset[str]:
+    """Parse the CSV permission header injected by the API gateway."""
+    return frozenset(item.strip() for item in (raw or "").split(",") if item.strip())
+
+
+def portal_cross_project(headers: Any) -> bool:
+    """Re-validate the cross-project intent inside the domain (defence in depth).
+
+    The gateway is the authoritative decision point, but a domain service must
+    never widen its scope on the strength of ``X-Portal-Cross-Project`` alone.
+    """
+    requested = str(headers.get("X-Portal-Cross-Project", "")).strip().lower() == "true"
+    if not requested:
+        return False
+    return PORTAL_CROSS_PROJECT_PERMISSION in platform_permissions(
+        headers.get("X-Platform-Permissions")
     )
+
+
+def parse_project_ids(raw: str | None) -> tuple[UUID, ...]:
+    """Parse the ``project_ids`` CSV, dropping malformed and duplicated entries."""
+    values: list[UUID] = []
+    for item in (raw or "").split(","):
+        candidate = item.strip()
+        if not candidate:
+            continue
+        try:
+            values.append(UUID(candidate))
+        except ValueError:
+            continue
+    return tuple(dict.fromkeys(values))
+
+
+def parse_portal_limit(raw: str | None, default: int, maximum: int) -> int:
+    """Parse a bounded portal list limit; out-of-range values raise ``ValueError``."""
+    if raw is None or raw == "":
+        return default
+    limit = int(raw)
+    if not 1 <= limit <= maximum:
+        raise ValueError(f"limit must be between 1 and {maximum}")
+    return limit
+
+
+def _problem(status: int, code: str, detail: str, *, trace_id: str | None = None) -> tuple[Response, int]:
+    """Return an RFC 9457 problem response aligned with ``common.yaml``.
+
+    ``error_code`` mirrors ``code`` for compatibility; ``trace_id`` is attached
+    when the caller can supply one.
+    """
+    body: dict[str, Any] = {
+        "type": f"urn:problem:{code.lower()}",
+        "title": code.replace("_", " ").title(),
+        "status": status,
+        "detail": detail,
+        "code": code,
+        "error_code": code,
+    }
+    if trace_id is not None:
+        body["trace_id"] = trace_id
+    response = jsonify(body)
     response.content_type = "application/problem+json"
     return response, status
+
+
+def _encode_cursor(offset: int) -> str:
+    """Encode an opaque pagination cursor from a row offset."""
+    return base64.urlsafe_b64encode(str(offset).encode("ascii")).decode("ascii")
+
+
+def _decode_cursor(raw: str | None) -> int:
+    """Decode an opaque pagination cursor, defaulting to the first page."""
+    if not raw:
+        return 0
+    try:
+        return int(base64.urlsafe_b64decode(raw.encode("ascii")).decode("ascii"))
+    except (ValueError, UnicodeDecodeError):
+        return 0
 
 
 def _actor_id() -> UUID:
@@ -101,11 +191,27 @@ def create_app(
     def get_service() -> DefectService:
         return DefectService(get_uow(), AllowAllAuthorizer())
 
+    def get_portal_repository() -> PortalRepository:
+        """Return a read-only portal projection for the current request.
+
+        In SQL mode this deliberately avoids ``get_uow()`` because the defect
+        unit of work eagerly hydrates every aggregate, which a dashboard summary
+        must never pay for.
+        """
+        if memory_store is not None:
+            return MemoryPortalRepository(cast(MemoryUnitOfWork, memory_store))
+        if runtime is None:
+            raise RuntimeError("TD SQL runtime is not configured")
+        if "td_portal_repository" not in g:
+            g.td_portal_repository = runtime.portal_repository()
+        return cast(PortalRepository, g.td_portal_repository)
+
     @app.teardown_appcontext
     def close_session(error: BaseException | None) -> None:
         if runtime is None:
             return
         current = g.pop("td_uow", None)
+        g.pop("td_portal_repository", None)
         if error is not None and current is not None:
             current.rollback()
         runtime.remove()
@@ -133,15 +239,89 @@ def create_app(
             return _problem(503, "DATABASE_UNAVAILABLE", "Private database is not ready")
         return {"status": "ready", "dependencies": {"database": "ready"}}
 
+    @app.get("/api/v1/portal/td-summary")
+    def portal_td_summary() -> tuple[Response, int] | dict[str, Any]:
+        """Return batched defect statistics for the platform dashboard.
+
+        The ``/api/v1/portal/*`` prefix is not routable through the browser-facing
+        gateway proxy, so this endpoint is only reachable server to server.
+        """
+        try:
+            defect_limit = parse_portal_limit(
+                request.args.get("defect_limit"),
+                PORTAL_DEFECT_LIMIT_DEFAULT,
+                PORTAL_DEFECT_LIMIT_MAX,
+            )
+        except ValueError as error:
+            return _problem(422, "VALIDATION_ERROR", str(error))
+        data = TdPortalService(get_portal_repository()).summary(
+            parse_project_ids(request.args.get("project_ids")),
+            optional_actor_id(request.headers.get("X-Actor-Id")),
+            cross_project=portal_cross_project(request.headers),
+            defect_limit=defect_limit,
+        )
+        return {
+            "data": data,
+            "meta": {"trace_id": request.headers.get("X-Trace-Id", "local")},
+        }
+
     @app.get("/api/v1/projects/<uuid:project_id>/defects")
     def list_defects(project_id: UUID) -> dict[str, Any]:
-        values = [
-            _serialize(item)
-            for (scope, _), item in get_uow().defects.items()
-            if scope == project_id
-        ]
-        values.sort(key=lambda item: (item["business_no"], item["id"]))
-        return {"data": values, "meta": {"count": len(values)}}
+        """Cursor-paginated defect list (architecture §9.B.1)."""
+        try:
+            limit = parse_portal_limit(
+                request.args.get("limit"),
+                DEFECT_LIST_LIMIT_DEFAULT,
+                DEFECT_LIST_LIMIT_MAX,
+            )
+        except ValueError as error:
+            return _problem(422, "VALIDATION_ERROR", str(error))
+        offset = _decode_cursor(request.args.get("cursor"))
+        # Request one extra row so we can decide whether another page exists
+        # without a second query.
+        rows = get_uow().list_defects(project_id, offset, limit + 1)
+        has_more = len(rows) > limit
+        items = rows[:limit]
+        next_cursor = _encode_cursor(offset + limit) if has_more else None
+        return {
+            "data": {"items": [_serialize(item) for item in items]},
+            "meta": {
+                "next_cursor": next_cursor,
+                "has_more": has_more,
+                "trace_id": request.headers.get("X-Trace-Id", "local"),
+            },
+        }
+
+    @app.patch("/api/v1/projects/<uuid:project_id>/defects/<uuid:defect_id>")
+    def patch_defect(project_id: UUID, defect_id: UUID) -> tuple[Response, int] | Response:
+        """Optimistic-concurrency defect update (architecture §9.B.2)."""
+        actor_id = _actor_id()
+        store = get_uow()
+        defect = get_service().get(project_id, defect_id)
+        if defect is None:
+            return _problem(404, "RESOURCE_NOT_FOUND", "Defect is not visible")
+        if request.headers.get("If-Match") != f'"{defect.version}"':
+            return _problem(412, "PRECONDITION_FAILED", "If-Match does not match the current ETag")
+        changes = request.get_json(silent=True) or {}
+        try:
+            updated = get_service().patch(actor_id, project_id, defect_id, changes)
+        except (KeyError, ValueError) as error:
+            store.rollback()
+            return _problem(422, "VALIDATION_ERROR", str(error))
+        body = {"data": _serialize(updated), "meta": {"trace_id": "local"}}
+        store.commit()
+        response = jsonify(body)
+        response.headers["ETag"] = f'"{updated.version}"'
+        return response
+
+    @app.get("/api/v1/projects/<uuid:project_id>/defects/<uuid:defect_id>/traceability-links")
+    def get_traceability_links(project_id: UUID, defect_id: UUID) -> dict[str, Any]:
+        """Return the requirement/test-case traceability graph (§9.B.3)."""
+        links = get_service().get_traceability_links(project_id, defect_id)
+        return {
+            "data": links,
+            "meta": {"trace_id": request.headers.get("X-Trace-Id", "local")},
+        }
 
     @app.post("/api/v1/projects/<uuid:project_id>/defects")
     def create_defect(project_id: UUID) -> tuple[Response, int] | Response:

@@ -1,0 +1,242 @@
+classDiagram
+    direction LR
+
+    %% ==================== 网关聚合层 (devops-api-gateway) ====================
+
+    class PortalDashboardService {
+        -HttpUpstream upstream
+        -ThreadPoolExecutor pool
+        -PortalSettings settings
+        +build(principal, requested_scope, access_token, trace_id) DashboardResult
+        -resolve_scope(principal, requested_scope) ScopeDecision
+        -collect_projects(ctx) ProjectsBlock
+        -collect_parallel(ctx, project_ids) dict
+        -assemble(blocks, decision, degraded) DashboardResult
+    }
+
+    class ScopeDecision {
+        +str effective
+        +str requested
+        +bool downgraded
+        +bool can_cross_project
+        +from_principal(principal, requested) ScopeDecision
+    }
+
+    class CollectorContext {
+        +str actor_id
+        +str access_token
+        +str trace_id
+        +bool cross_project
+        +tuple project_ids
+        +headers() dict
+    }
+
+    class DomainCollector {
+        <<interface>>
+        +str domain
+        +collect(ctx) tuple
+    }
+
+    class ProjectsCollector {
+        +str domain
+        +collect(ctx) tuple
+    }
+
+    class RequirementCollector {
+        +str domain
+        +collect(ctx) tuple
+    }
+
+    class TpCollector {
+        +str domain
+        +collect(ctx) tuple
+    }
+
+    class TdCollector {
+        +str domain
+        +collect(ctx) tuple
+    }
+
+    class WorkflowCollector {
+        +str domain
+        +collect(ctx) tuple
+    }
+
+    class ActivityCollector {
+        +str domain
+        +collect(ctx) tuple
+        -audit_or_notification(ctx) tuple
+    }
+
+    class DashboardResult {
+        +dict data
+        +dict meta
+        +list degraded
+        +to_response() dict
+    }
+
+    class Degradation {
+        +str domain
+        +str reason
+    }
+
+    class PortalSettings {
+        +float per_call_timeout
+        +float global_deadline
+        +int max_workers
+        +bool strict_scope
+        +int cache_ttl_seconds
+        +from_env() PortalSettings
+    }
+
+    class HttpUpstream {
+        +dict routes
+        +float timeout_seconds
+        +principal(access_token) dict
+        +request(path, method, token, payload, headers, qs) tuple
+        +fetch(service_key, path, token, headers, qs) tuple
+    }
+
+    PortalDashboardService --> HttpUpstream : uses
+    PortalDashboardService --> PortalSettings : configured by
+    PortalDashboardService --> ScopeDecision : produces
+    PortalDashboardService --> CollectorContext : builds
+    PortalDashboardService --> DashboardResult : returns
+    PortalDashboardService o-- DomainCollector : orchestrates 6
+    DomainCollector <|.. ProjectsCollector
+    DomainCollector <|.. RequirementCollector
+    DomainCollector <|.. TpCollector
+    DomainCollector <|.. TdCollector
+    DomainCollector <|.. WorkflowCollector
+    DomainCollector <|.. ActivityCollector
+    DomainCollector ..> CollectorContext : consumes
+    DomainCollector ..> HttpUpstream : calls
+    DashboardResult *-- Degradation
+
+    %% ==================== 前端 (devops-portal) ====================
+
+    class PortalApi {
+        <<module>>
+        +string PERMISSION_CROSS_PROJECT_VIEW
+        +string SCOPE_MINE
+        +string SCOPE_CROSS_PROJECT
+        +fetchDashboard(scope) Promise
+    }
+
+    class DashboardData {
+        <<interface>>
+        +string scope
+        +string scope_requested
+        +boolean scope_downgraded
+        +boolean can_cross_project
+        +string generated_at
+        +ProjectsBlock projects
+        +MyWorkBlock my_work
+        +RequirementStats requirement_stats
+        +TpStats tp_stats
+        +TdStats td_stats
+        +ActivityBlock recent_activities
+        +Degradation[] degraded
+    }
+
+    class ProjectsBlock {
+        <<interface>>
+        +number total
+        +ProjectItem[] items
+    }
+
+    class MyWorkBlock {
+        <<interface>>
+        +CountedList pending_requirement_reviews
+        +CountedList my_open_defects
+        +CountedList pending_test_executions
+        +CountedList pending_workflow_approvals
+    }
+
+    class UseDashboard {
+        <<composable>>
+        +Ref data
+        +Ref status
+        +Ref error
+        +Ref scope
+        +ComputedRef canCrossProject
+        +refresh() Promise
+        +setScope(scope) Promise
+        +startPolling() void
+        +stopPolling() void
+        +isDegraded(domain) boolean
+    }
+
+    class HomeView {
+        <<view>>
+    }
+
+    class DashboardCard {
+        <<component>>
+        +string title
+        +string state
+        +boolean degraded
+    }
+
+    class StatTile {
+        <<component>>
+        +number value
+        +string label
+    }
+
+    class ScopeBadge {
+        <<component>>
+        +string scope
+        +boolean canCrossProject
+    }
+
+    class ProjectOverviewCard {
+        <<component>>
+    }
+
+    class MyWorkCard {
+        <<component>>
+    }
+
+    class RequirementStatsCard {
+        <<component>>
+    }
+
+    class TpStatsCard {
+        <<component>>
+    }
+
+    class TdStatsCard {
+        <<component>>
+    }
+
+    class RecentActivityCard {
+        <<component>>
+    }
+
+    class QuickActions {
+        <<component>>
+    }
+
+    PortalApi ..> DashboardData : returns
+    DashboardData *-- ProjectsBlock
+    DashboardData *-- MyWorkBlock
+    UseDashboard --> PortalApi : calls
+    HomeView --> UseDashboard : uses
+    HomeView *-- ProjectOverviewCard
+    HomeView *-- MyWorkCard
+    HomeView *-- RequirementStatsCard
+    HomeView *-- TpStatsCard
+    HomeView *-- TdStatsCard
+    HomeView *-- RecentActivityCard
+    HomeView *-- ScopeBadge
+    HomeView *-- QuickActions
+    ProjectOverviewCard --> DashboardCard : wraps
+    MyWorkCard --> DashboardCard : wraps
+    RequirementStatsCard --> DashboardCard : wraps
+    TpStatsCard --> DashboardCard : wraps
+    TdStatsCard --> DashboardCard : wraps
+    RecentActivityCard --> DashboardCard : wraps
+    DashboardCard --> StatTile : renders
+
+    PortalApi ..> PortalDashboardService : HTTP GET /bff/api/portal/dashboard

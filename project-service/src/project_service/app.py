@@ -9,7 +9,7 @@ from project_service.collaboration.service import CollaborationService
 from project_service.config import Settings
 from project_service.database import Database
 from project_service.persistence.uow import SqlAlchemyUnitOfWorkFactory
-from project_service.projects.api import projects_blueprint
+from project_service.projects.api import portal_blueprint, projects_blueprint
 from project_service.projects.service import ProjectService
 from project_service.shared.errors import AppError
 from project_service.shared.request_context import RequestContext
@@ -151,6 +151,7 @@ def create_app(settings: Settings | None = None) -> Flask:
         )
 
     app.register_blueprint(projects_blueprint)
+    app.register_blueprint(portal_blueprint)
     app.register_blueprint(collaboration_blueprint)
     app.register_blueprint(tasks_blueprint)
     return app

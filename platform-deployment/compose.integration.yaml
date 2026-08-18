@@ -13,12 +13,25 @@ networks:
     external: true
     name: wkDEVOPS
 
+# Every long-running service declares restart: unless-stopped. Without it the
+# default policy is "no", so a host reboot or a Docker daemon restart leaves the
+# whole stack down and the portal port unbound (browsers see
+# ERR_CONNECTION_REFUSED). "unless-stopped" restores the stack automatically but
+# still honours a deliberate `docker compose stop/down` by an operator, which
+# "always" would not. The externally managed PostgreSQL already uses the same
+# policy. The profile-gated local-infra scaffolding below carries it too: the
+# profile keeps the scaffolding from ever starting by accident, but once an
+# operator does start it, a database or broker rebuilt from this file must
+# inherit the same reboot-survival guarantee rather than silently fall back to
+# "no". Tearing the scaffolding down stays a deliberate act
+# (`docker compose --profile local-infra down`), which "unless-stopped" honours.
 services:
   iam-service:
     build:
       context: ..
       dockerfile: iam-service/Dockerfile
     container_name: wkDEVOPS-iam-service
+    restart: unless-stopped
     user: "10001:10001"
     environment:
       APP_ENV: container
@@ -46,6 +59,7 @@ services:
       context: ..
       dockerfile: workflow-service/Dockerfile
     container_name: wkDEVOPS-workflow-service
+    restart: unless-stopped
     user: "10001:10001"
     environment:
       APP_ENV: container
@@ -66,6 +80,7 @@ services:
       context: ..
       dockerfile: requirement-service/Dockerfile
     container_name: wkDEVOPS-requirement-service
+    restart: unless-stopped
     user: "10001:10001"
     environment:
       APP_ENV: container
@@ -86,6 +101,7 @@ services:
       context: ..
       dockerfile: tp-service/Dockerfile
     container_name: wkDEVOPS-tp-service
+    restart: unless-stopped
     user: "10001:10001"
     environment:
       APP_ENV: container
@@ -108,6 +124,7 @@ services:
       context: ..
       dockerfile: td-service/Dockerfile
     container_name: wkDEVOPS-td-service
+    restart: unless-stopped
     user: "10001:10001"
     environment:
       APP_ENV: container
@@ -129,6 +146,7 @@ services:
       context: ..
       dockerfile: audit-service/Dockerfile
     container_name: wkDEVOPS-audit-service
+    restart: unless-stopped
     user: "10001:10001"
     environment:
       APP_ENV: container
@@ -149,6 +167,7 @@ services:
       context: ..
       dockerfile: notification-service/Dockerfile
     container_name: wkDEVOPS-notification-service
+    restart: unless-stopped
     user: "10001:10001"
     environment:
       APP_ENV: container
@@ -164,6 +183,101 @@ services:
     read_only: true
     tmpfs: [/tmp:size=64m]
     security_opt: [no-new-privileges:true]
+  # Project domain microservice (projects/tasks/collaboration). The image is a
+  # pre-built immutable release artifact: pull_policy: never guarantees the
+  # remote never rebuilds from source (remote only receives controlled,
+  # immutable releases). DATABASE_URL carries no password; the matching
+  # password reaches the container through libpq PGPASSWORD from the 600-mode
+  # operator env-file, exactly like the seven domain services.
+  project-service:
+    image: wkdevops-rttd-project-service:latest
+    pull_policy: never
+    container_name: wkDEVOPS-project-service
+    restart: unless-stopped
+    user: "10001:10001"
+    environment:
+      APP_ENV: container
+      SERVICE_NAME: project-service
+      ALLOWED_ORIGINS: ${PROJECT_ALLOWED_ORIGINS:-http://localhost:5173}
+      DATABASE_URL: ${PROJECT_DATABASE_URL}
+      PGPASSWORD: ${PGPASSWORD_PROJECT}
+      INTERNAL_SERVICE_TOKEN: ${PROJECT_INTERNAL_SERVICE_TOKEN}
+    ports: ["127.0.0.1:${PROJECT_PORT:-18190}:8080"]
+    networks: [platform]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/ready', timeout=2)"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    read_only: true
+    tmpfs: [/tmp:size=64m]
+    security_opt: [no-new-privileges:true]
+  # Browser BFF: cookie-only same-site gateway. It resolves identity through
+  # IAM on every request and proxies domain traffic with verified actor
+  # headers. The portal nginx.conf proxies /bff/ to the DNS alias "gateway".
+  # Dev-mode posture (APP_ENV=development + COOKIE_SECURE=false) is required so
+  # browsers can complete login over plain http on the LAN. This downgrade is
+  # isolated to the stateless gateway ONLY; the seven domain services and
+  # project-service keep APP_ENV=container (their DB fail-closed gate). CSRF
+  # enforcement is unchanged: Origin whitelist + double-submit token still gate
+  # every state-changing /bff/ request.
+  gateway:
+    image: wkdevops-rttd-gateway:latest
+    pull_policy: never
+    container_name: wkDEVOPS-devops-api-gateway
+    restart: unless-stopped
+    user: "10001:10001"
+    environment:
+      APP_ENV: development
+      COOKIE_SECURE: "false"
+      TRUSTED_ORIGINS: "http://192.168.3.177:18081,http://localhost:5173"
+      IAM_URL: http://wkDEVOPS-iam-service:18140
+      PROJECT_URL: http://wkDEVOPS-project-service:8080
+      REQUIREMENT_URL: http://wkDEVOPS-requirement-service:18110
+      TP_URL: http://wkDEVOPS-tp-service:18120
+      TD_URL: http://wkDEVOPS-td-service:18130
+      WORKFLOW_URL: http://wkDEVOPS-workflow-service:18150
+      AUDIT_URL: http://wkDEVOPS-audit-service:18160
+      NOTIFICATION_URL: http://wkDEVOPS-notification-service:18170
+    ports: ["127.0.0.1:${GATEWAY_PORT:-18180}:18180"]
+    networks:
+      platform:
+        aliases: [gateway]
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:18180/health', timeout=2)"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    read_only: true
+    tmpfs: [/tmp:size=64m]
+    security_opt: [no-new-privileges:true]
+  # Static portal: nginx serves the built Vue SPA and proxies /bff/ to the
+  # gateway. Exposed on 0.0.0.0 so browsers on the LAN can reach the portal.
+  # The image runs as the nginx user (not 10001) so no user override is set.
+  portal:
+    image: wkdevops-rttd-portal:latest
+    pull_policy: never
+    container_name: wkDEVOPS-devops-portal
+    restart: unless-stopped
+    environment:
+      APP_ENV: container
+    ports: ["0.0.0.0:${PORTAL_PORT:-18081}:8080"]
+    networks: [platform]
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://127.0.0.1:8080/health || exit 1"]
+      interval: 15s
+      timeout: 3s
+      retries: 5
+    read_only: true
+    # nginx (uid 101) must be able to create temp dirs under /var/cache/nginx
+    # and its pid file under /run. Docker tmpfs inherits the mountpoint mode
+    # from the image (0755 root-owned), so mode=1777 must be explicit; /run is
+    # mounted instead of /var/run because /var/run is a symlink to /run.
+    tmpfs:
+      - /var/cache/nginx:size=16m,mode=1777
+      - /run:size=16m,mode=1777
+      - /tmp:size=16m
+    security_opt: [no-new-privileges:true]
   # Throwaway scaffolding for isolated local experiments only. Profile-gated so
   # that a plain `docker compose up` can neither bind a port owned by the
   # platform instance nor start a database engine of a different major version.
@@ -171,6 +285,7 @@ services:
     profiles: ["local-infra"]
     image: postgres:16-alpine
     container_name: wkDEVOPS-python-compat-postgres
+    restart: unless-stopped
     environment:
       POSTGRES_DB: postgres
       POSTGRES_USER: postgres
@@ -189,6 +304,7 @@ services:
     profiles: ["local-infra"]
     image: rabbitmq:4.1-management-alpine
     container_name: wkDEVOPS-python-compat-rabbitmq
+    restart: unless-stopped
     environment:
       RABBITMQ_DEFAULT_USER: wkdevops
       RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD}

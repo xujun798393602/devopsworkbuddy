@@ -5,7 +5,12 @@ from uuid import uuid4
 
 from workflow_service.integrations.project_authorization import ProjectAuthorizationPort
 from workflow_service.workflows.models import WorkflowInstance
-from workflow_service.workflows.repository import WorkflowRepository
+from workflow_service.workflows.repository import (
+    PORTAL_APPROVAL_LIMIT_DEFAULT,
+    PortalApprovalSnapshot,
+    PortalRepository,
+    WorkflowRepository,
+)
 
 
 class WorkflowService:
@@ -122,3 +127,46 @@ class WorkflowService:
 def canonical(value: object) -> str:
     encoded = json.dumps(value, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
+
+
+def _portal_scope(project_ids: tuple[str, ...]) -> tuple[str, ...]:
+    """De-duplicate while preserving order; never mutate the caller's tuple."""
+    return tuple(dict.fromkeys(project_ids))
+
+
+def _portal_approval_item(snapshot: PortalApprovalSnapshot) -> dict[str, object]:
+    """Serialize a pending-approval projection for the dashboard contract."""
+    return {
+        "id": snapshot.id,
+        "project_id": snapshot.project_id,
+        "business_object_type": snapshot.business_object_type,
+        "business_object_id": snapshot.business_object_id,
+        "current_state": snapshot.current_state,
+        "started_at": snapshot.started_at,
+    }
+
+
+class WorkflowPortalService:
+    """Read-only dashboard projection for workflow pending approvals."""
+
+    def __init__(self, repository: PortalRepository) -> None:
+        self.repository = repository
+
+    def summary(
+        self,
+        project_ids: tuple[str, ...],
+        actor_id: str | None = None,
+        *,
+        cross_project: bool = False,
+        limit: int = PORTAL_APPROVAL_LIMIT_DEFAULT,
+    ) -> dict[str, object]:
+        """Return the count and a length-bounded list of pending approvals.
+
+        ``actor_id`` is accepted for signature parity with the other portal
+        services; the gateway already scopes ``project_ids`` to the caller's
+        projects, so no extra actor filtering is required here.
+        """
+        snapshot_scope = _portal_scope(project_ids)
+        snapshots = self.repository.pending_approvals(snapshot_scope, cross_project)
+        items = [_portal_approval_item(snapshot) for snapshot in snapshots[:limit]]
+        return {"count": len(snapshots), "items": items}

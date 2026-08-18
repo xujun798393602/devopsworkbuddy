@@ -5,7 +5,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from uuid import UUID
 
-from sqlalchemy import delete, func, select, text, tuple_, update
+from sqlalchemy import case, delete, func, select, text, tuple_, update
 from sqlalchemy.orm import Session
 
 from project_service.collaboration.models import Iteration, ProjectMembership, ReleaseVersion, Role
@@ -27,11 +27,28 @@ from project_service.shared.errors import ValidationError
 from project_service.tasks.models import Task, Worklog
 
 
-def _uuid(value: str) -> UUID | None:
+def _uuid(value: str | UUID) -> UUID | None:
+    """Parse ``value`` into a :class:`UUID`, tolerating already-typed input.
+
+    Callers such as :meth:`SqlAlchemyPortalRepository.scoped_projects` hand back
+    domain ``Project`` objects whose ``id`` is already a :class:`UUID` instance.
+    Passing a ``UUID`` straight into ``UUID(...)`` raises ``AttributeError``
+    (``'UUID' object has no attribute 'replace'``) rather than ``ValueError``, so
+    the previous narrow ``except`` let that bubble up as a 500. Accepting
+    ``UUID`` instances directly keeps this helper idempotent for every caller.
+    """
+    if isinstance(value, UUID):
+        return value
     try:
         return UUID(value)
-    except ValueError:
+    except (ValueError, AttributeError, TypeError):
         return None
+
+
+def _uuid_list(values: list[str]) -> list[UUID]:
+    """Convert identifiers to UUIDs, silently dropping malformed entries."""
+    converted = [_uuid(value) for value in values]
+    return [item for item in converted if item is not None]
 
 
 class SqlAlchemyProjectRepository:
@@ -93,6 +110,103 @@ class SqlAlchemyProjectRepository:
             )
         )
         return result.rowcount == 1
+
+
+class SqlAlchemyPortalRepository:
+    """Batched read-only queries backing the portal dashboard aggregation.
+
+    Every method issues at most one statement for the whole project set so the
+    portal overview cost stays constant instead of growing with project count.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self._session = session
+
+    def scoped_projects(self, actor_id: str, cross_project: bool) -> list[Project]:
+        """List projects visible in the requested portal scope, newest first."""
+        statement = select(ProjectRow)
+        if not cross_project:
+            statement = statement.join(
+                ProjectMembershipRow, ProjectMembershipRow.project_id == ProjectRow.id
+            ).where(
+                ProjectMembershipRow.user_id == actor_id,
+                ProjectMembershipRow.status == "active",
+            )
+        statement = statement.order_by(ProjectRow.created_at.desc(), ProjectRow.id)
+        return [_project(row) for row in self._session.scalars(statement)]
+
+    def active_iterations(self, project_ids: list[str]) -> dict[str, Iteration]:
+        """Map each project to its single active iteration, when present."""
+        identifiers = _uuid_list(project_ids)
+        if not identifiers:
+            return {}
+        rows = self._session.scalars(
+            select(IterationRow)
+            .where(IterationRow.project_id.in_(identifiers), IterationRow.status == "active")
+            .order_by(IterationRow.project_id, IterationRow.start_date, IterationRow.id)
+        )
+        result: dict[str, Iteration] = {}
+        for row in rows:
+            result.setdefault(str(row.project_id), _iteration(row))
+        return result
+
+    def active_versions(self, project_ids: list[str]) -> dict[str, ReleaseVersion]:
+        """Map each project to its nearest active release version, when present."""
+        identifiers = _uuid_list(project_ids)
+        if not identifiers:
+            return {}
+        rows = self._session.scalars(
+            select(ReleaseVersionRow)
+            .where(
+                ReleaseVersionRow.project_id.in_(identifiers),
+                ReleaseVersionRow.status == "active",
+            )
+            .order_by(
+                ReleaseVersionRow.project_id,
+                # Explicit NULLs-last ordering keeps SQLite and PostgreSQL identical.
+                case((ReleaseVersionRow.planned_release_date.is_(None), 1), else_=0),
+                ReleaseVersionRow.planned_release_date,
+                ReleaseVersionRow.id,
+            )
+        )
+        result: dict[str, ReleaseVersion] = {}
+        for row in rows:
+            result.setdefault(str(row.project_id), _version(row))
+        return result
+
+    def task_progress(self, project_ids: list[str]) -> dict[str, tuple[int, int]]:
+        """Return ``{project_id: (completed_tasks, tracked_tasks)}`` excluding cancelled work."""
+        identifiers = _uuid_list(project_ids)
+        if not identifiers:
+            return {}
+        rows = self._session.execute(
+            select(
+                TaskRow.project_id,
+                func.count(TaskRow.id),
+                func.coalesce(
+                    func.sum(case((TaskRow.status.in_(("done", "closed")), 1), else_=0)), 0
+                ),
+            )
+            .where(TaskRow.project_id.in_(identifiers), TaskRow.status != "canceled")
+            .group_by(TaskRow.project_id)
+        )
+        return {str(pid): (int(done or 0), int(total or 0)) for pid, total, done in rows}
+
+    def open_task_counts(self, project_ids: list[str], actor_id: str) -> dict[str, int]:
+        """Return ``{project_id: open_task_count}`` for tasks assigned to the actor."""
+        identifiers = _uuid_list(project_ids)
+        if not identifiers:
+            return {}
+        rows = self._session.execute(
+            select(TaskRow.project_id, func.count(TaskRow.id))
+            .where(
+                TaskRow.project_id.in_(identifiers),
+                TaskRow.assignee_id == actor_id,
+                TaskRow.status.not_in(("done", "closed", "canceled")),
+            )
+            .group_by(TaskRow.project_id)
+        )
+        return {str(pid): int(count or 0) for pid, count in rows}
 
 
 class SqlAlchemyCollaborationRepository:

@@ -27,6 +27,7 @@ class HttpUpstream:
             "projects": os.getenv("PROJECT_URL", ""),
             "requirements": os.getenv("REQUIREMENT_URL", ""),
             "test-folders": os.getenv("TP_URL", ""),
+            "test-cases": os.getenv("TP_URL", ""),
             "test-design-sessions": os.getenv("TP_URL", ""),
             "test-environments": os.getenv("TP_URL", ""),
             "test-plans": os.getenv("TP_URL", ""),
@@ -39,6 +40,18 @@ class HttpUpstream:
             "audit-records": os.getenv("AUDIT_URL", ""),
             "me": os.getenv("NOTIFICATION_URL", ""),
         }
+        # Canonical per-domain keys used by the portal dashboard fan-out.
+        routes.update(
+            {
+                "project": os.getenv("PROJECT_URL", ""),
+                "requirement": os.getenv("REQUIREMENT_URL", ""),
+                "tp": os.getenv("TP_URL", ""),
+                "td": os.getenv("TD_URL", ""),
+                "workflow": os.getenv("WORKFLOW_URL", ""),
+                "audit": os.getenv("AUDIT_URL", ""),
+                "notification": os.getenv("NOTIFICATION_URL", ""),
+            }
+        )
         if any(not value for value in routes.values()):
             raise RuntimeError("All domain upstream URLs are required")
         return cls(iam_url=iam_url, routes=routes)
@@ -94,6 +107,37 @@ class HttpUpstream:
             {**headers, "Authorization": f"Bearer {access_token}"},
         )
 
+    def fetch(
+        self,
+        service_key: str,
+        path: str,
+        token: str,
+        headers: Mapping[str, str] | None = None,
+        qs: str = "",
+        timeout: float | None = None,
+    ) -> tuple[int, object]:
+        """Call a domain portal endpoint by explicit service key.
+
+        Unlike :meth:`request`, this resolves the upstream by the canonical
+        service key (``project``, ``requirement``, ``tp``, ``td``,
+        ``workflow``, ``audit``, ``notification``) so the dashboard can reach
+        ``/api/v1/portal/*`` paths that are not exposed through the generic
+        browser proxy routing table.
+        """
+        base_url = self.routes.get(service_key)
+        if base_url is None:
+            return 404, {"error_code": "UPSTREAM_ROUTE_NOT_FOUND"}
+        target = f"{base_url.rstrip('/')}/api/{path.lstrip('/')}"
+        if qs:
+            target = f"{target}?{qs}"
+        return self._request(
+            target,
+            "GET",
+            None,
+            {"Authorization": f"Bearer {token}", **(headers or {})},
+            timeout=timeout,
+        )
+
     @staticmethod
     def _route_key(path: str) -> str:
         """Resolve a versioned domain path without trusting a client-provided host."""
@@ -112,6 +156,7 @@ class HttpUpstream:
         method: str,
         payload: Any | None = None,
         headers: dict[str, str] | None = None,
+        timeout: float | None = None,
     ) -> tuple[int, object]:
         body = json.dumps(payload).encode() if payload is not None else None
         request = urllib.request.Request(
@@ -120,8 +165,9 @@ class HttpUpstream:
             method=method,
             headers={"Content-Type": "application/json", **(headers or {})},
         )
+        effective_timeout = self.timeout_seconds if timeout is None else timeout
         try:
-            with urllib.request.urlopen(request, timeout=self.timeout_seconds) as response:
+            with urllib.request.urlopen(request, timeout=effective_timeout) as response:
                 raw = response.read()
                 return response.status, json.loads(raw) if raw else {}
         except urllib.error.HTTPError as error:

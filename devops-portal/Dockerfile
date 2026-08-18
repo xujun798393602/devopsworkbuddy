@@ -3,7 +3,8 @@ FROM ${NGINX_IMAGE}
 USER root
 COPY nginx.conf /etc/nginx/conf.d/default.conf
 COPY dist /usr/share/nginx/html
-RUN chmod -R a-w /usr/share/nginx/html \
+RUN chown -R nginx:nginx /usr/share/nginx/html \
+    && chmod -R a-w /usr/share/nginx/html \
     && chown -R nginx:nginx /var/cache/nginx /var/run /etc/nginx/conf.d
 USER nginx
 EXPOSE 8080

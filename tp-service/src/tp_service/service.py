@@ -11,9 +11,12 @@ from tp_service.design.safe_xmind import validate_xmind
 from tp_service.domain import (
     DesignSession,
     DomainError,
+    TestCase,
+    TestCaseVersion,
     TestExecution,
     TestFolder,
     TestReport,
+    TestStep,
     deterministic_mock,
 )
 from tp_service.execution import (
@@ -26,6 +29,7 @@ from tp_service.execution import (
     ingest_automation_json,
     ingest_junit_xml,
 )
+from tp_service.repository import PortalExecutionSnapshot
 
 
 class Authorizer(Protocol):
@@ -34,6 +38,8 @@ class Authorizer(Protocol):
 
 class UnitOfWork(Protocol):
     folders: dict[tuple[UUID, UUID], TestFolder]
+    cases: dict[tuple[UUID, UUID], TestCase]
+    case_versions: dict[UUID, list[TestCaseVersion]]
     sessions: dict[tuple[UUID, UUID], DesignSession]
     import_batches: list[dict[str, Any]]
     outbox: list[dict[str, Any]]
@@ -242,6 +248,232 @@ class TpService:
         self._emit("TestPlan.ScopeFrozen", project_id, plan_id=plan.id, scope_hash=plan.scope_hash)
         return plan
 
+    def create_case(
+        self,
+        actor_id: UUID,
+        project_id: UUID,
+        business_no: str,
+        folder_id: UUID,
+        title: str,
+        owner_id: UUID,
+        case_type: str,
+        priority: str,
+        automation_mode: str,
+        requirement_refs: tuple[UUID, ...],
+    ) -> TestCase:
+        """Create a draft test case whose immutable content lives in versions."""
+        self._authorize(actor_id, project_id, "test-case:create")
+        if (project_id, folder_id) not in self.uow.folders:
+            raise DomainError("RESOURCE_NOT_FOUND", "Folder is not visible", 404)
+        normalized_no = business_no.strip()
+        if not normalized_no:
+            normalized_no = self._next_case_business_no(project_id)
+        case = TestCase(
+            uuid4(),
+            project_id,
+            normalized_no,
+            folder_id,
+            title,
+            owner_id,
+            case_type,
+            priority,
+            "draft",
+            automation_mode,
+            None,
+            requirement_refs,
+        )
+        self.uow.cases[(project_id, case.id)] = case
+        self._emit("TestCase.Created", project_id, case_id=str(case.id))
+        return case
+
+    def _next_case_business_no(self, project_id: UUID) -> str:
+        """Generate a stable per-project business number for an empty input."""
+        sequence = sum(1 for (scope, _), _ in self.uow.cases.items() if scope == project_id)
+        return f"TC-{sequence + 1:04d}"
+
+    def get_case(self, project_id: UUID, case_id: UUID) -> TestCase | None:
+        """Return the case in the project scope or ``None`` when hidden."""
+        return self.uow.cases.get((project_id, case_id))
+
+    def list_cases(self, project_id: UUID) -> list[TestCase]:
+        """Return all cases of a project in a stable, deterministic order."""
+        cases = [case for (scope, _), case in self.uow.cases.items() if scope == project_id]
+        cases.sort(key=lambda item: (str(item.business_no), str(item.id)))
+        return cases
+
+    def patch_case(
+        self,
+        actor_id: UUID,
+        project_id: UUID,
+        case_id: UUID,
+        changes: dict[str, Any],
+    ) -> TestCase:
+        """Optimistic-concurrency head-metadata update (architecture §9.C.1).
+
+        Only the mutable head fields are touched; the content snapshot is owned
+        by :class:`TestCaseVersion`. The case is reconstructed so the domain
+        ``__post_init__`` validation (title + enum checks) runs on the result.
+        """
+        self._authorize(actor_id, project_id, "test-case:patch")
+        case = self._project_resource(self.uow.cases, project_id, case_id, "Test case")
+        editable = {
+            "folder_id",
+            "title",
+            "owner_id",
+            "type",
+            "priority",
+            "status",
+            "automation_mode",
+            "requirement_refs",
+        }
+        updates = {key: changes[key] for key in editable if key in changes}
+        if not updates:
+            return case
+        folder_id = case.folder_id
+        if "folder_id" in updates:
+            folder_id = UUID(str(updates["folder_id"]))
+            if (project_id, folder_id) not in self.uow.folders:
+                raise DomainError("RESOURCE_NOT_FOUND", "Folder is not visible", 404)
+        owner_id = case.owner_id
+        if "owner_id" in updates:
+            owner_id = UUID(str(updates["owner_id"]))
+        requirement_refs = case.requirement_refs
+        if "requirement_refs" in updates:
+            requirement_refs = tuple(UUID(str(item)) for item in updates["requirement_refs"])
+        updated = TestCase(
+            case.id,
+            case.project_id,
+            case.business_no,
+            folder_id,
+            str(updates.get("title", case.title)),
+            owner_id,
+            str(updates.get("type", case.type)),
+            str(updates.get("priority", case.priority)),
+            str(updates.get("status", case.status)),
+            str(updates.get("automation_mode", case.automation_mode)),
+            case.current_version_id,
+            requirement_refs,
+            version=case.version + 1,
+        )
+        self.uow.cases[(project_id, case.id)] = updated
+        self._emit("TestCase.Patched", project_id, case_id=str(case.id))
+        return updated
+
+    def create_case_version(
+        self,
+        actor_id: UUID,
+        project_id: UUID,
+        case_id: UUID,
+        steps: list[dict[str, Any]],
+        source: str,
+    ) -> TestCaseVersion:
+        """Create an immutable version and publish it (§9.C.2)."""
+        self._authorize(actor_id, project_id, "test-case:version:create")
+        case = self._project_resource(self.uow.cases, project_id, case_id, "Test case")
+        existing = self.uow.case_versions.get(case_id, [])
+        version_no = len(existing) + 1
+        test_steps = tuple(
+            TestStep(
+                int(step["sequence"]),
+                str(step["action"]),
+                str(step["expected"]),
+                str(step.get("test_data", "")),
+            )
+            for step in steps
+        )
+        version = TestCaseVersion.create(case.id, version_no, test_steps, source)
+        self.uow.case_versions.setdefault(case_id, []).append(version)
+        case.publish(version)
+        self._emit(
+            "TestCase.VersionPublished",
+            project_id,
+            case_id=str(case.id),
+            version_id=str(version.id),
+        )
+        return version
+
+    def publish_case_version(
+        self,
+        actor_id: UUID,
+        project_id: UUID,
+        case_id: UUID,
+        version_id: UUID,
+    ) -> TestCaseVersion:
+        """Publish an existing immutable version (§9.C.2 explicit mechanism)."""
+        self._authorize(actor_id, project_id, "test-case:version:publish")
+        case = self._project_resource(self.uow.cases, project_id, case_id, "Test case")
+        version = next(
+            (item for item in self.uow.case_versions.get(case_id, []) if item.id == version_id),
+            None,
+        )
+        if version is None:
+            raise DomainError("RESOURCE_NOT_FOUND", "Test case version is not visible", 404)
+        case.publish(version)
+        self._emit(
+            "TestCase.VersionPublished",
+            project_id,
+            case_id=str(case.id),
+            version_id=str(version.id),
+        )
+        return version
+
+    def list_case_versions(self, case_id: UUID) -> list[TestCaseVersion]:
+        """Return every version of a case in creation order."""
+        return list(self.uow.case_versions.get(case_id, []))
+
+    def get_case_version(self, version_id: UUID) -> TestCaseVersion | None:
+        """Find a version across every case by id (§9.C.2)."""
+        for versions in self.uow.case_versions.values():
+            match = next((item for item in versions if item.id == version_id), None)
+            if match is not None:
+                return match
+        return None
+
+    def get_plan(self, project_id: UUID, plan_id: UUID) -> ManagedPlan | None:
+        """Return the plan in the project scope or ``None`` when hidden."""
+        return self.uow.plans.get((project_id, plan_id))
+
+    def list_plans(self, project_id: UUID) -> list[ManagedPlan]:
+        """Return all plans of a project in a stable, deterministic order."""
+        plans = [plan for (scope, _), plan in self.uow.plans.items() if scope == project_id]
+        plans.sort(key=lambda item: (str(item.business_no), str(item.id)))
+        return plans
+
+    def transition_plan(
+        self,
+        actor_id: UUID,
+        project_id: UUID,
+        plan_id: UUID,
+        action: str,
+        scope: tuple[PlanScopeSnapshot, ...],
+        valid_case_versions: set[UUID],
+        reason: str,
+    ) -> ManagedPlan:
+        """Apply one explicit lifecycle action to a plan (architecture §9.C.3).
+
+        ``freeze`` routes to :meth:`freeze_plan`; the remaining actions map to the
+        real transitions implemented by :class:`ManagedPlan`. Actions without a
+        real target state (e.g. ``submit``/``approve``/``reject``/``activate`` of
+        the aspirational doc vocabulary) are rejected because ``ManagedPlan`` has
+        no such intermediate states, so we never invent phantom status values.
+        """
+        self._authorize(actor_id, project_id, "test-plan:transition")
+        plan = self._project_resource(self.uow.plans, project_id, plan_id, "Test plan")
+        if action == "freeze":
+            plan.freeze(scope, valid_case_versions)
+            self._emit("TestPlan.ScopeFrozen", project_id, plan_id=plan.id, scope_hash=plan.scope_hash)
+            return plan
+        target = PLAN_TRANSITION_TARGETS.get(action)
+        if target is None:
+            raise DomainError(
+                "INVALID_PLAN_TRANSITION",
+                f"Cannot apply action {action!r} to plan in status {plan.status}",
+                422,
+            )
+        plan.transition(target)
+        self._emit("TestPlan.Transitioned", project_id, plan_id=plan.id, action=action)
+        return plan
+
     def create_execution(
         self,
         actor_id: UUID,
@@ -356,3 +588,146 @@ class TpService:
         if session is None:
             raise DomainError("RESOURCE_NOT_FOUND", "Design session is not visible", 404)
         return session
+
+
+PORTAL_EXECUTION_LIMIT_DEFAULT = 5
+PORTAL_EXECUTION_LIMIT_MAX = 50
+PORTAL_EXECUTION_STATUS_KEYS: tuple[str, ...] = ("pending", "running", "passed", "failed")
+PORTAL_TERMINAL_CASE_RUN_STATUSES = frozenset({"passed", "failed", "blocked", "skipped"})
+PORTAL_FAILED_CASE_RUN_STATUSES = frozenset({"failed", "blocked"})
+PORTAL_PENDING_EXECUTION_STATUS = "pending"
+
+# Generic test-plan lifecycle actions exposed through the transitions endpoint
+# (architecture §9.C.3). ``freeze`` is the documented alias for the frozen
+# single-shot scope-freeze; the rest map onto ``ManagedPlan.transition``.
+PLAN_TRANSITION_ACTIONS: tuple[str, ...] = (
+    "freeze",
+    "start_execution",
+    "complete",
+    "cancel",
+    "close",
+)
+PLAN_TRANSITION_TARGETS: dict[str, str] = {
+    "start_execution": "in_progress",
+    "complete": "completed",
+    "cancel": "canceled",
+    "close": "closed",
+}
+
+
+class PortalRepository(Protocol):
+    """Read-only port supplying batched portal projections."""
+
+    def case_total(
+        self,
+        project_ids: tuple[UUID, ...] | list[UUID],
+        cross_project: bool = False,
+    ) -> int: ...
+
+    def plan_total(
+        self,
+        project_ids: tuple[UUID, ...] | list[UUID],
+        cross_project: bool = False,
+    ) -> int: ...
+
+    def executions(
+        self,
+        project_ids: tuple[UUID, ...] | list[UUID],
+        cross_project: bool = False,
+    ) -> list[PortalExecutionSnapshot]: ...
+
+
+def derive_execution_status(snapshot: PortalExecutionSnapshot) -> str:
+    """Derive the portal execution bucket from the TP execution and case runs.
+
+    The four portal buckets partition every execution exactly once so that
+    ``sum(execution_by_status.values()) == execution_total`` always holds:
+
+    * ``pending``  - the execution has not been started yet (``draft``).
+    * ``running``  - started but at least one latest case-run is not terminal.
+    * ``failed``   - every latest case-run is terminal and at least one failed
+      or was blocked.
+    * ``passed``   - every latest case-run is terminal and none failed.
+    """
+    if snapshot.status == "draft":
+        return PORTAL_PENDING_EXECUTION_STATUS
+    counts = snapshot.latest_attempt_counts
+    total = sum(counts.values())
+    if total == 0:
+        return "running"
+    terminal = sum(
+        value for status, value in counts.items() if status in PORTAL_TERMINAL_CASE_RUN_STATUSES
+    )
+    if terminal < total:
+        return "running"
+    failed = sum(
+        value for status, value in counts.items() if status in PORTAL_FAILED_CASE_RUN_STATUSES
+    )
+    return "failed" if failed else "passed"
+
+
+def portal_execution_name(snapshot: PortalExecutionSnapshot) -> str:
+    """Compose a stable display name; TP executions carry no name column."""
+    if snapshot.plan_business_no:
+        return f"{snapshot.plan_business_no} R{snapshot.round_no}"
+    return f"R{snapshot.round_no}"
+
+
+def _portal_execution_item(snapshot: PortalExecutionSnapshot) -> dict[str, Any]:
+    """Shape one pending execution item against the frozen portal contract.
+
+    ``planned_at`` is always ``None``: ``test_executions`` has no scheduling
+    timestamp column and the portal work explicitly excludes schema migrations.
+    """
+    return {
+        "id": str(snapshot.id),
+        "project_id": str(snapshot.project_id),
+        "plan_id": str(snapshot.plan_id),
+        "name": portal_execution_name(snapshot),
+        "status": PORTAL_PENDING_EXECUTION_STATUS,
+        "planned_at": None,
+    }
+
+
+@dataclass(slots=True)
+class TpPortalService:
+    """Aggregate read-only TP statistics for the platform dashboard."""
+
+    repository: PortalRepository
+
+    def summary(
+        self,
+        project_ids: tuple[UUID, ...] | list[UUID],
+        actor_id: UUID | None = None,
+        *,
+        cross_project: bool = False,
+        execution_limit: int = PORTAL_EXECUTION_LIMIT_DEFAULT,
+    ) -> dict[str, Any]:
+        """Return the frozen ``tp_stats`` payload for the requested scope."""
+        scope = tuple(dict.fromkeys(project_ids))
+        executions = self.repository.executions(scope, cross_project)
+        by_status = dict.fromkeys(PORTAL_EXECUTION_STATUS_KEYS, 0)
+        pending: list[PortalExecutionSnapshot] = []
+        for snapshot in executions:
+            derived = derive_execution_status(snapshot)
+            by_status[derived] += 1
+            if derived == PORTAL_PENDING_EXECUTION_STATUS:
+                pending.append(snapshot)
+        # The item list belongs to the "my work" card, so executions assigned to
+        # the caller surface first while `count` still reports the whole scope.
+        if actor_id is not None:
+            pending.sort(key=lambda item: 0 if item.assignee_id == actor_id else 1)
+        passed = by_status["passed"]
+        failed = by_status["failed"]
+        attempted = passed + failed
+        return {
+            "case_total": self.repository.case_total(scope, cross_project),
+            "plan_total": self.repository.plan_total(scope, cross_project),
+            "execution_total": len(executions),
+            "execution_by_status": by_status,
+            "pass_rate": round(passed / attempted, 2) if attempted else None,
+            "pending_executions": {
+                "count": len(pending),
+                "items": [_portal_execution_item(item) for item in pending[:execution_limit]],
+            },
+        }

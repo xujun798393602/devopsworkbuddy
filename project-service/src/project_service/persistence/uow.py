@@ -11,6 +11,7 @@ from project_service.persistence.repositories import (
     SqlAlchemyAuditRepository,
     SqlAlchemyCollaborationRepository,
     SqlAlchemyOutboxRepository,
+    SqlAlchemyPortalRepository,
     SqlAlchemyProjectRepository,
     SqlAlchemyTaskRepository,
 )
@@ -23,6 +24,7 @@ class UnitOfWork(Protocol):
     collaboration: CollaborationRepository
     tasks: TaskRepository
     idempotency: IdempotencyRepository
+    portal: object
     audit: object
     outbox: object
 
@@ -45,6 +47,7 @@ class SqlAlchemyUnitOfWork:
         self.collaboration = SqlAlchemyCollaborationRepository(self._session)
         self.tasks = SqlAlchemyTaskRepository(self._session)
         self.idempotency = SqlAlchemyIdempotencyRepository(self._session)
+        self.portal = SqlAlchemyPortalRepository(self._session)
         self.audit = SqlAlchemyAuditRepository(self._session)
         self.outbox = SqlAlchemyOutboxRepository(self._session)
         return self

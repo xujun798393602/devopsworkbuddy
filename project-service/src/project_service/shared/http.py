@@ -9,6 +9,41 @@ from flask import Request
 
 from project_service.shared.errors import ValidationError
 
+PORTAL_CROSS_PROJECT_PERMISSION = "portal:cross-project-view"
+
+
+def platform_permissions(request: Request) -> frozenset[str]:
+    """Return the gateway-injected platform permission set."""
+    raw = request.headers.get("X-Platform-Permissions", "")
+    return frozenset(item.strip() for item in raw.split(",") if item.strip())
+
+
+def portal_cross_project(request: Request) -> bool:
+    """Resolve the effective portal cross-project flag with defence in depth.
+
+    The gateway is the primary decision point, but this service never trusts the
+    ``X-Portal-Cross-Project`` header on its own: the permission set injected by
+    the gateway must also carry ``portal:cross-project-view``.
+    """
+    requested = request.headers.get("X-Portal-Cross-Project", "").strip().lower() == "true"
+    if not requested:
+        return False
+    return PORTAL_CROSS_PROJECT_PERMISSION in platform_permissions(request)
+
+
+def parse_portal_limit(request: Request, name: str, default: int, maximum: int) -> int:
+    """Parse a bounded portal aggregation limit."""
+    raw = request.args.get(name)
+    if raw is None or raw == "":
+        return default
+    try:
+        limit = int(raw)
+    except ValueError as error:
+        raise ValidationError(f"{name} must be an integer") from error
+    if not 1 <= limit <= maximum:
+        raise ValidationError(f"{name} must be between 1 and {maximum}")
+    return limit
+
 
 def require_idempotency_key(request: Request) -> str:
     """Return a valid required idempotency key."""

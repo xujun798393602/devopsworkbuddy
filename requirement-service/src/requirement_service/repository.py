@@ -6,7 +6,7 @@ from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
-from sqlalchemy import select, text
+from sqlalchemy import func, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, scoped_session, sessionmaker
 
@@ -28,6 +28,32 @@ from requirement_service.persistence import (
     RequirementRow,
     ReviewRoundRow,
 )
+
+
+def requirement_from_row(row: RequirementRow) -> Requirement:
+    """Rehydrate the requirement aggregate from its persisted row."""
+    return Requirement(
+        UUID(row.id),
+        UUID(row.project_id),
+        row.business_no,
+        row.title,
+        RequirementType(row.type),
+        UUID(row.owner_id),
+        UUID(row.release_version_id),
+        row.description,
+        UUID(row.parent_id) if row.parent_id else None,
+        row.priority,
+        RequirementStatus(row.status),
+        list(row.acceptance_criteria),
+        row.current_revision,
+        row.version,
+        row.baseline_status,
+    )
+
+
+def _portal_scope(project_ids: tuple[str, ...] | list[str]) -> set[str]:
+    """Normalise the requested project scope to comparable string identifiers."""
+    return {str(value) for value in project_ids}
 
 
 class RequirementMapping(MutableMapping[tuple[UUID, UUID], Requirement]):
@@ -98,23 +124,7 @@ class RequirementMapping(MutableMapping[tuple[UUID, UUID], Requirement]):
         )
         if row is None:
             return default
-        return Requirement(
-            UUID(row.id),
-            UUID(row.project_id),
-            row.business_no,
-            row.title,
-            RequirementType(row.type),
-            UUID(row.owner_id),
-            UUID(row.release_version_id),
-            row.description,
-            UUID(row.parent_id) if row.parent_id else None,
-            row.priority,
-            RequirementStatus(row.status),
-            list(row.acceptance_criteria),
-            row.current_revision,
-            row.version,
-            row.baseline_status,
-        )
+        return requirement_from_row(row)
 
 
 class RevisionMapping(MutableMapping[UUID, list[RequirementRevision]]):
@@ -211,6 +221,32 @@ class MemoryUnitOfWork:
     def rollback(self) -> None:
         """Keep the adapter API aligned with production."""
 
+    def portal_requirements(
+        self, project_ids: tuple[str, ...], cross_project: bool
+    ) -> list[Requirement]:
+        """Return every requirement inside the requested portal scope."""
+        scope = _portal_scope(project_ids)
+        if not cross_project and not scope:
+            return []
+        return [
+            value
+            for (project_id, _), value in self.requirements.items()
+            if cross_project or str(project_id) in scope
+        ]
+
+    def portal_active_baseline_total(
+        self, project_ids: tuple[str, ...], cross_project: bool
+    ) -> int:
+        """Count active baselines inside the requested portal scope."""
+        scope = _portal_scope(project_ids)
+        if not cross_project and not scope:
+            return 0
+        return sum(
+            1
+            for (project_id, _), value in self.baselines.items()
+            if (cross_project or str(project_id) in scope) and value.status == "active"
+        )
+
     def get_idempotency(
         self, project_id: str, actor_id: str, key: str
     ) -> tuple[str, dict[str, Any], int] | None:
@@ -230,6 +266,23 @@ class MemoryUnitOfWork:
             response_body,
             response_status,
         )
+
+    def list_requirements(
+        self, project_id: UUID, offset: int, limit: int
+    ) -> list[Requirement]:
+        """Return one deterministic page of project requirements (cursor-ready).
+
+        Ordered by ``(business_no, id)`` so an opaque offset cursor stays stable
+        across pages; the HTTP adapter requests ``limit + 1`` rows to learn
+        whether another page exists.
+        """
+        values = [
+            value
+            for (scope, _), value in self.requirements.items()
+            if scope == project_id
+        ]
+        values.sort(key=lambda item: (item.business_no, str(item.id)))
+        return values[offset : offset + limit]
 
 
 class SqlAlchemyUnitOfWork:
@@ -343,6 +396,31 @@ class SqlAlchemyUnitOfWork:
     def rollback(self) -> None:
         self.session.rollback()
 
+    def portal_requirements(
+        self, project_ids: tuple[str, ...], cross_project: bool
+    ) -> list[Requirement]:
+        """Return every requirement inside the portal scope with one statement."""
+        scope = sorted(_portal_scope(project_ids))
+        if not cross_project and not scope:
+            return []
+        statement = select(RequirementRow)
+        if not cross_project:
+            statement = statement.where(RequirementRow.project_id.in_(scope))
+        statement = statement.order_by(RequirementRow.project_id, RequirementRow.business_no)
+        return [requirement_from_row(row) for row in self.session.scalars(statement)]
+
+    def portal_active_baseline_total(
+        self, project_ids: tuple[str, ...], cross_project: bool
+    ) -> int:
+        """Count active baselines inside the portal scope with one statement."""
+        scope = sorted(_portal_scope(project_ids))
+        if not cross_project and not scope:
+            return 0
+        statement = select(func.count(BaselineRow.id)).where(BaselineRow.status == "active")
+        if not cross_project:
+            statement = statement.where(BaselineRow.project_id.in_(scope))
+        return int(self.session.scalar(statement) or 0)
+
     def get_idempotency(
         self, project_id: str, actor_id: str, key: str
     ) -> tuple[str, dict[str, Any], int] | None:
@@ -370,6 +448,19 @@ class SqlAlchemyUnitOfWork:
                 response_status=response_status,
             )
         )
+
+    def list_requirements(
+        self, project_id: UUID, offset: int, limit: int
+    ) -> list[Requirement]:
+        """Return one deterministic page of project requirements (cursor-ready)."""
+        statement = (
+            select(RequirementRow)
+            .where(RequirementRow.project_id == str(project_id))
+            .order_by(RequirementRow.business_no, RequirementRow.id)
+            .offset(offset)
+            .limit(limit)
+        )
+        return [requirement_from_row(row) for row in self.session.scalars(statement)]
 
 
 class SqlAlchemyRuntime:

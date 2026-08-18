@@ -2,6 +2,7 @@
 
 import os
 import secrets
+import uuid
 from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Protocol
@@ -9,6 +10,7 @@ from typing import Protocol
 from flask import Flask, Response, jsonify, request
 
 from gateway.csrf import validate_csrf
+from gateway.portal_dashboard import PortalDashboardService, PortalSettings
 from gateway.singleflight import RefreshSingleFlight
 
 
@@ -27,6 +29,15 @@ class IamUpstream(Protocol):
         payload: object | None,
         headers: Mapping[str, str],
         query_string: str,
+    ) -> tuple[int, object]: ...
+    def fetch(
+        self,
+        service_key: str,
+        path: str,
+        token: str,
+        headers: Mapping[str, str] | None = None,
+        qs: str = "",
+        timeout: float | None = None,
     ) -> tuple[int, object]: ...
 
 
@@ -65,12 +76,16 @@ class GatewaySettings:
 def create_app(
     upstream: IamUpstream,
     settings: GatewaySettings | None = None,
+    portal_settings: PortalSettings | None = None,
 ) -> Flask:
     """Create a BFF using an injected IAM/upstream adapter."""
     app = Flask(__name__)
     config = settings or GatewaySettings.from_env()
     origins = set(config.trusted_origins)
     refresh_flights = RefreshSingleFlight()
+    app.extensions["portal_dashboard_service"] = PortalDashboardService(
+        upstream, portal_settings or PortalSettings.from_env()
+    )
 
     @app.before_request
     def csrf_guard() -> Response | tuple[Response, int, dict[str, str]] | None:
@@ -131,6 +146,25 @@ def create_app(
         clear_auth_cookies(response, config)
         return response
 
+    @app.route(
+        "/bff/api/v1/portal/<path:path>",
+        methods=["GET", "POST", "PUT", "PATCH", "DELETE"],
+    )
+    def portal_isolation(path: str) -> tuple[Response, int, dict[str, str]]:
+        """Hard 404 for any unknown portal path.
+
+        The portal dashboard is served only from ``/bff/api/portal/dashboard``.
+        Any ``/bff/api/v1/portal/*`` path must answer 404 here, *before* the
+        generic ``/bff/api/<path:path>`` proxy rule. Otherwise the proxy would
+        forward it to an upstream v1 service that demands authentication and
+        leak a 401, which the architecture explicitly forbids for this surface.
+        """
+        return problem(
+            404,
+            "NOT_FOUND",
+            "The portal dashboard is served from /bff/api/portal/dashboard",
+        )
+
     @app.route("/bff/api/<path:path>", methods=["GET", "POST", "PUT", "PATCH", "DELETE"])
     def proxy(path: str) -> Response | tuple[Response, int, dict[str, str]]:
         access_token = request.cookies.get("devops_session", "")
@@ -170,6 +204,25 @@ def create_app(
             return response
         response = jsonify(body)
         response.status_code = status
+        return response
+
+    @app.get("/bff/api/portal/dashboard")
+    def portal_dashboard() -> Response | tuple[Response, int, dict[str, str]]:
+        access_token = request.cookies.get("devops_session", "")
+        if not access_token:
+            return problem(401, "SESSION_REQUIRED", "Authentication is required")
+        try:
+            principal = upstream.principal(access_token)
+        except PermissionError:
+            return problem(401, "SESSION_EXPIRED", "Session expired")
+        requested_scope = request.args.get("scope", "mine")
+        trace_id = request.headers.get("X-Trace-Id", uuid.uuid4().hex)
+        service: PortalDashboardService = app.extensions["portal_dashboard_service"]
+        result, failure = service.build(principal, requested_scope, access_token, trace_id)
+        if failure is not None:
+            return problem(403, failure[0], failure[1])
+        response = jsonify(result.to_response())
+        response.headers["X-Trace-Id"] = trace_id
         return response
 
     return app

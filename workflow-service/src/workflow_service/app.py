@@ -14,10 +14,14 @@ from workflow_service.integrations.project_authorization import (
 from workflow_service.persistence import DatabaseSettings, SqlAlchemyRuntime
 from workflow_service.workflows.models import WorkflowInstance, WorkflowTemplateVersion
 from workflow_service.workflows.repository import (
+    PORTAL_APPROVAL_LIMIT_DEFAULT,
+    PORTAL_APPROVAL_LIMIT_MAX,
     InMemoryWorkflowRepository,
+    MemoryPortalRepository,
+    PortalRepository,
     WorkflowRepository,
 )
-from workflow_service.workflows.service import WorkflowService
+from workflow_service.workflows.service import WorkflowPortalService, WorkflowService
 
 
 def create_app(
@@ -270,7 +274,90 @@ def create_app(
             return problem(status, str(error), str(error))
         return success(instance_data(item))
 
+    def get_portal_repository() -> PortalRepository:
+        """Resolve the portal read repository for the active storage backend."""
+        if isinstance(repository, InMemoryWorkflowRepository):
+            return MemoryPortalRepository(repository)
+        if runtime is not None:
+            return runtime.portal_repository()
+        return MemoryPortalRepository(repository)
+
+    @app.get("/api/v1/portal/pending-approvals")
+    def portal_pending_approvals() -> dict[str, object] | tuple[Response, int, dict[str, str]]:
+        """Return batched workflow pending-approvals for the platform dashboard.
+
+        The ``/api/v1/portal/*`` prefix is not routable through the
+        browser-facing gateway proxy, so this endpoint is only reachable
+        server to server.
+        """
+        try:
+            limit = parse_portal_limit(
+                request.args.get("limit"),
+                PORTAL_APPROVAL_LIMIT_DEFAULT,
+                PORTAL_APPROVAL_LIMIT_MAX,
+            )
+        except ValueError:
+            return problem(
+                422,
+                "INVALID_LIMIT",
+                f"limit must be between 1 and {PORTAL_APPROVAL_LIMIT_MAX}",
+            )
+        data = WorkflowPortalService(get_portal_repository()).summary(
+            parse_project_ids(request.args.get("project_ids")),
+            optional_actor_id(request.headers.get("X-Actor-Id")),
+            cross_project=portal_cross_project(request.headers),
+            limit=limit,
+        )
+        return success(data)
+
     return app
+
+
+PORTAL_CROSS_PROJECT_PERMISSION = "portal:cross-project-view"
+
+
+def optional_actor_id(raw: str | None) -> str | None:
+    """Parse the gateway-injected actor identity without failing a read."""
+    return raw.strip() if raw else None
+
+
+def platform_permissions(raw: str | None) -> frozenset[str]:
+    """Parse the CSV permission header injected by the API gateway."""
+    return frozenset(item.strip() for item in (raw or "").split(",") if item.strip())
+
+
+def portal_cross_project(headers: dict[str, str]) -> bool:
+    """Re-validate the cross-project intent inside the domain (defence in depth).
+
+    The gateway is the authoritative decision point, but a domain service must
+    never widen its scope on the strength of ``X-Portal-Cross-Project`` alone.
+    """
+    requested = str(headers.get("X-Portal-Cross-Project", "")).strip().lower() == "true"
+    if not requested:
+        return False
+    return PORTAL_CROSS_PROJECT_PERMISSION in platform_permissions(
+        headers.get("X-Platform-Permissions")
+    )
+
+
+def parse_project_ids(raw: str | None) -> tuple[str, ...]:
+    """Parse the ``project_ids`` CSV, dropping empty and duplicated entries."""
+    values: list[str] = []
+    for item in (raw or "").split(","):
+        candidate = item.strip()
+        if candidate and candidate not in values:
+            values.append(candidate)
+    return tuple(values)
+
+
+def parse_portal_limit(raw: str | None, default: int, maximum: int) -> int:
+    """Parse a bounded portal list limit; out-of-range values raise ``ValueError``."""
+    if raw is None or raw == "":
+        return default
+    limit = int(raw)
+    if not 1 <= limit <= maximum:
+        raise ValueError(f"limit must be between 1 and {maximum}")
+    return limit
 
 
 def commit(runtime: SqlAlchemyRuntime | None) -> None:

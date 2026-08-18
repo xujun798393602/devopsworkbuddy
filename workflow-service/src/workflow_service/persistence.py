@@ -15,6 +15,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     create_engine,
+    func,
     select,
     text,
 )
@@ -33,6 +34,10 @@ from workflow_service.workflows.models import (
     WorkflowInstance,
     WorkflowTemplateVersion,
     WorkflowTransition,
+)
+from workflow_service.workflows.repository import (
+    PORTAL_PENDING_STATES,
+    PortalApprovalSnapshot,
 )
 
 
@@ -285,6 +290,50 @@ class SqlAlchemyWorkflowRepository:
         ]
 
 
+class SqlAlchemyPortalRepository:
+    """PostgreSQL pending-approvals projection using batch statements."""
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    def pending_approvals(
+        self, project_ids: tuple[str, ...], cross_project: bool
+    ) -> list[PortalApprovalSnapshot]:
+        if not project_ids and not cross_project:
+            return []
+        stmt = select(WorkflowInstanceRow).where(
+            WorkflowInstanceRow.current_state.in_(tuple(PORTAL_PENDING_STATES))
+        )
+        if project_ids:
+            stmt = stmt.where(WorkflowInstanceRow.project_id.in_(tuple(project_ids)))
+        rows = self.session.scalars(stmt).all()
+        if not rows:
+            return []
+        instance_ids = tuple(row.id for row in rows)
+        first_transitions = self.session.execute(
+            select(
+                WorkflowTransitionRow.instance_id,
+                func.min(WorkflowTransitionRow.occurred_at),
+            )
+            .where(WorkflowTransitionRow.instance_id.in_(instance_ids))
+            .group_by(WorkflowTransitionRow.instance_id)
+        ).all()
+        started_map = {instance_id: occurred_at for instance_id, occurred_at in first_transitions}
+        snapshots = [
+            PortalApprovalSnapshot(
+                row.id,
+                row.project_id,
+                row.business_object_type,
+                row.business_object_id,
+                row.current_state,
+                started_map.get(row.id).isoformat() if started_map.get(row.id) else None,
+            )
+            for row in rows
+        ]
+        snapshots.sort(key=lambda snapshot: (snapshot.started_at or "", snapshot.id))
+        return snapshots
+
+
 @dataclass(frozen=True, slots=True)
 class DatabaseSettings:
     """Database settings with production fail-closed validation."""
@@ -318,6 +367,10 @@ class SqlAlchemyRuntime:
     def repository(self) -> SqlAlchemyWorkflowRepository:
         """Create a repository bound to the current request session."""
         return SqlAlchemyWorkflowRepository(self.sessions)
+
+    def portal_repository(self) -> SqlAlchemyPortalRepository:
+        """Create the portal read projection bound to the current session."""
+        return SqlAlchemyPortalRepository(self.sessions)
 
     def commit(self) -> None:
         """Commit the current request transaction."""

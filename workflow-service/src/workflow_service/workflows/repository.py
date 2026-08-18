@@ -1,6 +1,7 @@
 """Workflow repositories for controlled tests and PostgreSQL production."""
 from __future__ import annotations
 
+from dataclasses import dataclass
 from typing import Protocol
 
 from workflow_service.workflows.models import (
@@ -8,6 +9,34 @@ from workflow_service.workflows.models import (
     WorkflowInstance,
     WorkflowTemplateVersion,
 )
+
+# Portal dashboard projection tuning.
+PORTAL_APPROVAL_LIMIT_DEFAULT = 5
+PORTAL_APPROVAL_LIMIT_MAX = 50
+# "Pending approval" means an instance that has not yet been picked up: the
+# initial lifecycle state. Terminal / in-progress states are excluded.
+PORTAL_PENDING_STATES = frozenset({"todo"})
+
+
+@dataclass(frozen=True, slots=True)
+class PortalApprovalSnapshot:
+    """Read-only projection of a workflow instance awaiting action."""
+
+    id: str
+    project_id: str
+    business_object_type: str
+    business_object_id: str
+    current_state: str
+    started_at: str | None
+
+
+class PortalRepository(Protocol):
+    """Storage contract consumed by the workflow portal dashboard service."""
+
+    def pending_approvals(
+        self, project_ids: tuple[str, ...], cross_project: bool
+    ) -> list[PortalApprovalSnapshot]:
+        """Return every instance in a pending state within the resolved scope."""
 
 
 class WorkflowRepository(Protocol):
@@ -93,3 +122,41 @@ class InMemoryWorkflowRepository:
 
     def list_instances(self, project_id: str) -> list[WorkflowInstance]:
         return [item for item in self.instances.values() if item.project_id == project_id]
+
+
+class MemoryPortalRepository:
+    """In-memory pending-approvals projection backed by the unit of work."""
+
+    def __init__(self, uow: InMemoryWorkflowRepository) -> None:
+        self.uow = uow
+
+    @staticmethod
+    def _started_at(item: WorkflowInstance) -> str:
+        if item.history:
+            return item.history[0].occurred_at.isoformat()
+        return ""
+
+    def pending_approvals(
+        self, project_ids: tuple[str, ...], cross_project: bool
+    ) -> list[PortalApprovalSnapshot]:
+        pending = [
+            item
+            for item in self.uow.instances.values()
+            if item.current_state in PORTAL_PENDING_STATES
+        ]
+        if project_ids:
+            pending = [item for item in pending if item.project_id in project_ids]
+        elif not cross_project:
+            return []
+        pending.sort(key=lambda item: (self._started_at(item), item.id))
+        return [
+            PortalApprovalSnapshot(
+                item.id,
+                item.project_id,
+                item.business_object_type,
+                item.business_object_id,
+                item.current_state,
+                item.history[0].occurred_at.isoformat() if item.history else None,
+            )
+            for item in pending
+        ]

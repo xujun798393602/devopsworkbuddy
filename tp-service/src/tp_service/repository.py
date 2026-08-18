@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID, uuid4
 
-from sqlalchemy import select, text
+from sqlalchemy import and_, func, select, text
 from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, scoped_session, sessionmaker
 
@@ -65,6 +65,229 @@ from tp_service.traceability import TraceabilityLink, TraceEndpoint
 IdempotencyValue = tuple[str, dict[str, Any], int]
 ROOT_PARENT_KEY = UUID("ffffffff-ffff-ffff-ffff-ffffffffffff")
 SYSTEM_ACTOR_ID = UUID("eeeeeeee-eeee-eeee-eeee-eeeeeeeeeeee")
+
+
+@dataclass(frozen=True, slots=True)
+class PortalExecutionSnapshot:
+    """Read-only execution projection consumed by the portal dashboard aggregation.
+
+    ``latest_attempt_counts`` maps a case-run status to the number of *latest*
+    attempts holding that status inside the execution. Only the latest attempt of
+    each ``case_version_ref`` is counted so that reruns never inflate the totals.
+    """
+
+    id: UUID
+    project_id: UUID
+    plan_id: UUID
+    assignee_id: UUID
+    round_no: int
+    status: str
+    plan_business_no: str
+    latest_attempt_counts: dict[str, int] = field(default_factory=dict)
+
+
+def _portal_scope(project_ids: tuple[UUID, ...] | list[UUID]) -> tuple[UUID, ...]:
+    """Deduplicate the requested project identifiers while preserving order."""
+    return tuple(dict.fromkeys(project_ids))
+
+
+@dataclass(slots=True)
+class MemoryPortalRepository:
+    """Portal projections computed from the explicit in-memory adapter."""
+
+    uow: MemoryUnitOfWork
+
+    @staticmethod
+    def _visible(project_id: UUID, scope: set[UUID] | None) -> bool:
+        """Return whether a project falls inside the effective portal scope."""
+        return scope is None or project_id in scope
+
+    @staticmethod
+    def _scope(
+        project_ids: tuple[UUID, ...] | list[UUID],
+        cross_project: bool,
+    ) -> set[UUID] | None:
+        """Return ``None`` for a platform-wide scope or the explicit project set."""
+        if cross_project:
+            return None
+        return set(project_ids)
+
+    def case_total(
+        self,
+        project_ids: tuple[UUID, ...] | list[UUID],
+        cross_project: bool = False,
+    ) -> int:
+        """Count test cases inside the effective scope."""
+        scope = self._scope(project_ids, cross_project)
+        return sum(1 for (project_id, _) in self.uow.cases if self._visible(project_id, scope))
+
+    def plan_total(
+        self,
+        project_ids: tuple[UUID, ...] | list[UUID],
+        cross_project: bool = False,
+    ) -> int:
+        """Count test plans inside the effective scope."""
+        scope = self._scope(project_ids, cross_project)
+        return sum(1 for (project_id, _) in self.uow.plans if self._visible(project_id, scope))
+
+    def executions(
+        self,
+        project_ids: tuple[UUID, ...] | list[UUID],
+        cross_project: bool = False,
+    ) -> list[PortalExecutionSnapshot]:
+        """Return deterministic execution snapshots inside the effective scope."""
+        scope = self._scope(project_ids, cross_project)
+        snapshots: list[PortalExecutionSnapshot] = []
+        for (project_id, _), managed in self.uow.executions.items():
+            if not self._visible(project_id, scope):
+                continue
+            aggregate = managed.aggregate
+            counts: dict[str, int] = {}
+            for attempts in aggregate.attempts.values():
+                if not attempts:
+                    continue
+                latest = max(attempts, key=lambda attempt: attempt.attempt_no)
+                counts[latest.status] = counts.get(latest.status, 0) + 1
+            plan = self.uow.plans.get((aggregate.project_id, aggregate.plan_id))
+            snapshots.append(
+                PortalExecutionSnapshot(
+                    aggregate.id,
+                    aggregate.project_id,
+                    aggregate.plan_id,
+                    aggregate.assignee_id,
+                    managed.round_no,
+                    aggregate.status,
+                    plan.business_no if plan is not None else "",
+                    counts,
+                )
+            )
+        snapshots.sort(
+            key=lambda item: (
+                str(item.project_id),
+                item.plan_business_no,
+                item.round_no,
+                str(item.id),
+            )
+        )
+        return snapshots
+
+
+class SqlAlchemyPortalRepository:
+    """Batched read-only SQL projections for the portal dashboard.
+
+    Every method issues at most one statement covering the whole project set so
+    that a dashboard fan-out never degenerates into an N+1 query pattern.
+    """
+
+    def __init__(self, session: Session) -> None:
+        self.session = session
+
+    @staticmethod
+    def _empty(project_ids: tuple[UUID, ...] | list[UUID], cross_project: bool) -> bool:
+        """Return whether the effective scope can only produce zero values."""
+        return not cross_project and not project_ids
+
+    def case_total(
+        self,
+        project_ids: tuple[UUID, ...] | list[UUID],
+        cross_project: bool = False,
+    ) -> int:
+        """Count test cases with one aggregate statement."""
+        if self._empty(project_ids, cross_project):
+            return 0
+        statement = select(func.count()).select_from(TestCaseRow)
+        if not cross_project:
+            statement = statement.where(TestCaseRow.project_id.in_(tuple(project_ids)))
+        return int(self.session.scalar(statement) or 0)
+
+    def plan_total(
+        self,
+        project_ids: tuple[UUID, ...] | list[UUID],
+        cross_project: bool = False,
+    ) -> int:
+        """Count test plans with one aggregate statement."""
+        if self._empty(project_ids, cross_project):
+            return 0
+        statement = select(func.count()).select_from(TestPlanRow)
+        if not cross_project:
+            statement = statement.where(TestPlanRow.project_id.in_(tuple(project_ids)))
+        return int(self.session.scalar(statement) or 0)
+
+    def _latest_attempt_counts(
+        self,
+        project_ids: tuple[UUID, ...] | list[UUID],
+        cross_project: bool,
+    ) -> dict[UUID, dict[str, int]]:
+        """Group latest case-run attempt statuses per execution in one statement."""
+        latest = (
+            select(
+                CaseRunAttemptRow.execution_id.label("execution_id"),
+                CaseRunAttemptRow.case_version_ref.label("case_version_ref"),
+                func.max(CaseRunAttemptRow.attempt_no).label("attempt_no"),
+            )
+            .group_by(CaseRunAttemptRow.execution_id, CaseRunAttemptRow.case_version_ref)
+            .subquery()
+        )
+        statement = (
+            select(
+                CaseRunAttemptRow.execution_id,
+                CaseRunAttemptRow.status,
+                func.count().label("total"),
+            )
+            .join(
+                latest,
+                and_(
+                    CaseRunAttemptRow.execution_id == latest.c.execution_id,
+                    CaseRunAttemptRow.case_version_ref == latest.c.case_version_ref,
+                    CaseRunAttemptRow.attempt_no == latest.c.attempt_no,
+                ),
+            )
+            .join(TestExecutionRow, TestExecutionRow.id == CaseRunAttemptRow.execution_id)
+            .group_by(CaseRunAttemptRow.execution_id, CaseRunAttemptRow.status)
+        )
+        if not cross_project:
+            statement = statement.where(TestExecutionRow.project_id.in_(tuple(project_ids)))
+        counts: dict[UUID, dict[str, int]] = {}
+        for execution_id, status, total in self.session.execute(statement):
+            counts.setdefault(execution_id, {})[str(status)] = int(total)
+        return counts
+
+    def executions(
+        self,
+        project_ids: tuple[UUID, ...] | list[UUID],
+        cross_project: bool = False,
+    ) -> list[PortalExecutionSnapshot]:
+        """Return execution snapshots joined with their plan business number."""
+        if self._empty(project_ids, cross_project):
+            return []
+        counts = self._latest_attempt_counts(project_ids, cross_project)
+        statement = (
+            select(TestExecutionRow, TestPlanRow.business_no)
+            .join(TestPlanRow, TestPlanRow.id == TestExecutionRow.plan_id, isouter=True)
+            .order_by(
+                TestExecutionRow.project_id,
+                TestExecutionRow.plan_id,
+                TestExecutionRow.round_no,
+                TestExecutionRow.id,
+            )
+        )
+        if not cross_project:
+            statement = statement.where(TestExecutionRow.project_id.in_(tuple(project_ids)))
+        snapshots: list[PortalExecutionSnapshot] = []
+        for row, business_no in self.session.execute(statement):
+            snapshots.append(
+                PortalExecutionSnapshot(
+                    row.id,
+                    row.project_id,
+                    row.plan_id,
+                    row.assignee_id,
+                    row.round_no,
+                    row.status,
+                    business_no or "",
+                    dict(counts.get(row.id, {})),
+                )
+            )
+        return snapshots
 
 
 @dataclass(slots=True)
@@ -677,6 +900,14 @@ class SqlAlchemyRuntime:
     def unit_of_work(self) -> SqlAlchemyUnitOfWork:
         """Create a UoW bound to the current request-scoped Session."""
         return SqlAlchemyUnitOfWork(self.sessions)
+
+    def portal_repository(self) -> SqlAlchemyPortalRepository:
+        """Create a read-only portal projection bound to the current Session.
+
+        The portal never loads the full aggregate graph, so it deliberately
+        bypasses :class:`SqlAlchemyUnitOfWork` and its eager ``_load`` pass.
+        """
+        return SqlAlchemyPortalRepository(self.sessions)
 
     def ready(self) -> None:
         """Raise when the private TP database is unavailable."""

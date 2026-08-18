@@ -1,0 +1,123 @@
+sequenceDiagram
+    autonumber
+    actor U as 用户浏览器
+    participant H as HomeView.vue
+    participant C as useDashboard.ts
+    participant A as api/portal.ts
+    participant GW as Gateway app.py
+    participant IAM as iam-service
+    participant PD as PortalDashboardService
+    participant PS as project-service
+    participant RS as requirement-service
+    participant TP as tp-service
+    participant TD as td-service
+    participant WF as workflow-service
+    participant AU as audit-service
+
+    U->>H: 访问 /app/home
+    H->>C: onMounted() 初始化
+    C->>C: scope = auth.has('portal:cross-project-view') ? 'cross-project' : 'mine'
+    Note over C,H: 立即渲染 6 张骨架屏卡片
+    C->>A: fetchDashboard(scope)
+    A->>GW: GET /bff/api/portal/dashboard?scope=... (cookie devops_session)
+
+    GW->>GW: csrf_guard - GET 属 SAFE, 放行
+    GW->>GW: 读取 cookie devops_session
+    alt 无 cookie
+        GW-->>A: 401 SESSION_REQUIRED
+    end
+    GW->>IAM: principal(access_token)
+    alt token 失效
+        IAM-->>GW: PermissionError
+        GW-->>A: 401 SESSION_EXPIRED
+        A->>GW: POST /bff/auth/refresh (client.ts 自动重放)
+        GW-->>A: 新 cookie, 重发原请求
+    end
+    IAM-->>GW: principal{id, permissions[]}
+    GW->>PD: build(principal, requested_scope, token, trace_id)
+
+    rect rgb(255, 235, 235)
+        Note over PD: 安全红线 - 跨项目裁决唯一发生点
+        PD->>PD: ScopeDecision.from_principal()
+        PD->>PD: can_cross = 'portal:cross-project-view' in principal.permissions
+        alt requested=cross-project 且 can_cross=false
+            PD->>PD: effective='mine', downgraded=true (strict_scope=true 时改为 403)
+        else 权限校验通过
+            PD->>PD: effective = requested
+        end
+    end
+
+    alt effective == 'mine' 两阶段扇出
+        Note over PD,PS: 阶段 A - 先取项目范围
+        PD->>PS: GET /api/v1/portal/projects-overview?limit=8 (X-Actor-Id, X-Portal-Cross-Project: false)
+        PS->>PS: list_for_actor(actor_id) 仅成员关系内项目
+        PS-->>PD: {total, items[], project_ids[]}
+        Note over PD: 阶段 B - 5 路并行 ThreadPoolExecutor
+        par 并行扇出 (project_ids 已知)
+            PD->>RS: GET /api/v1/portal/requirement-summary?project_ids=...
+            RS-->>PD: {total, by_status, baseline_total, pending_reviews}
+        and
+            PD->>TP: GET /api/v1/portal/tp-summary?project_ids=...
+            TP-->>PD: {case_total, execution_by_status, pending_executions}
+        and
+            PD->>TD: GET /api/v1/portal/td-summary?project_ids=...
+            TD-->>PD: {total, by_status, by_severity, my_open_defects}
+        and
+            PD->>WF: GET /api/v1/portal/pending-approvals?project_ids=...
+            WF-->>PD: {count, items[]}
+        and
+            PD->>AU: GET /api/v1/audit-records?from&to&limit=10
+            alt 无 audit.read 权限
+                AU-->>PD: 403 PERMISSION_DENIED
+                PD->>PD: 降级 - 改调 notification-service
+            else 有 audit.read 权限
+                AU-->>PD: {data:[...]}
+            end
+        end
+    else effective == 'cross-project' 单阶段全并行
+        Note over PD,AU: 6 路一次性并行, project_ids 传空表示全平台
+        par 全并行
+            PD->>PS: projects-overview (X-Portal-Cross-Project: true)
+            PS->>PS: 二次校验 X-Platform-Permissions
+            PS-->>PD: 全平台项目
+        and
+            PD->>RS: requirement-summary (cross=true)
+            RS->>RS: 二次校验权限
+            RS-->>PD: 全平台需求统计
+        and
+            PD->>TD: td-summary (cross=true)
+            TD-->>PD: 全平台缺陷统计
+        and
+            PD->>TP: tp-summary (cross=true)
+            TP-->>PD: 全平台测试统计
+        and
+            PD->>WF: pending-approvals (cross=true)
+            WF-->>PD: 待审列表
+        and
+            PD->>AU: audit-records
+            AU-->>PD: 全平台动态
+        end
+    end
+
+    PD->>PD: as_completed(timeout=4s) 收割结果
+    Note over PD: 超时或异常的域返回结构化零值 + degraded[], 绝不整体 500
+    PD->>PD: assemble() 装配六大块
+    PD-->>GW: DashboardResult
+    GW-->>A: 200 {data:{...}, meta:{trace_id, took_ms}}
+
+    A->>A: ApiProblem 检查 (client.ts)
+    A-->>C: DashboardData
+    C->>C: status='ready', data=payload
+    C->>H: 响应式更新
+    H->>U: 渲染 6 张卡片 (固定顺序, 千人一面)
+    Note over H,U: scope_downgraded 提示已降级 / degraded 卡片显示重试 / items 空显示引导
+
+    loop 每 60s (document.visibilityState === 'visible' 时)
+        C->>A: fetchDashboard(scope) 静默刷新, 不显示骨架屏
+        A-->>C: 新数据 (stale-while-revalidate)
+    end
+
+    U->>H: 点击刷新按钮
+    H->>C: refresh()
+    U->>H: 切换 全平台/我的项目 (仅 can_cross_project 时可见)
+    H->>C: setScope(next) 重新请求
